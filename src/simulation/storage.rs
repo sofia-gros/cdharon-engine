@@ -1,4 +1,4 @@
-//! Bounded generation storage for stopped-tick snapshots.
+//! 停止tick時点のsnapshotを世代番号付きで保存し、破損世代から復旧する機能を提供します。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -79,8 +79,17 @@ impl GenerationStore {
         })
     }
 
-    /// Write and sync a complete generation, then publish it with a same-directory rename.
+    /// 完全な世代fileを書き込み同期した後、同一directory内のrenameで読取可能世代として公開します。
+    /// 途中失敗では現在の有効世代を置換せず、再起動時に部分fileを最新世代と誤認させません。
     pub fn save(&self, payload: &[u8]) -> Result<u64, StorageError> {
+        self.save_injected(payload, None)
+    }
+
+    fn save_injected(
+        &self,
+        payload: &[u8],
+        fault: Option<SaveFaultPoint>,
+    ) -> Result<u64, StorageError> {
         if payload.len() > self.max_bytes {
             return Err(StorageError::TooLarge);
         }
@@ -89,6 +98,9 @@ impl GenerationStore {
         let final_path = self.generation_path(generation);
         let temp_path = self.root.join(format!(".generation-{generation}.tmp"));
         let result = (|| {
+            if fault == Some(SaveFaultPoint::CreateTemp) {
+                return Err(injected_io_error());
+            }
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -101,9 +113,21 @@ impl GenerationStore {
                 .map_err(io_error)?;
             file.write_all(&checksum(payload).to_le_bytes())
                 .map_err(io_error)?;
+            if fault == Some(SaveFaultPoint::PartialWrite) {
+                return Err(injected_io_error());
+            }
             file.write_all(payload).map_err(io_error)?;
+            if fault == Some(SaveFaultPoint::AfterWrite) {
+                return Err(injected_io_error());
+            }
+            if fault == Some(SaveFaultPoint::Flush) {
+                return Err(injected_io_error());
+            }
             file.sync_all().map_err(io_error)?;
             drop(file);
+            if fault == Some(SaveFaultPoint::Rename) {
+                return Err(injected_io_error());
+            }
             fs::rename(&temp_path, &final_path).map_err(io_error)?;
             Ok(())
         })();
@@ -164,7 +188,8 @@ impl GenerationStore {
         })
     }
 
-    /// Select the newest valid complete generation; report whether corrupt newer files were skipped.
+    /// 新しい順に完全性を検証し、最初に読めた世代を返します。
+    /// より新しい破損fileを飛ばした場合はその事実も返し、古い有効世代へ黙って戻ったことを隠しません。
     pub fn load_latest(&self) -> Result<LoadedGeneration, StorageError> {
         let mut generations = self.list_generations()?;
         generations.sort_unstable_by(|a, b| b.cmp(a));
@@ -284,6 +309,19 @@ impl GenerationStore {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveFaultPoint {
+    CreateTemp,
+    PartialWrite,
+    AfterWrite,
+    Flush,
+    Rename,
+}
+
+fn injected_io_error() -> StorageError {
+    io_error(std::io::Error::other("injected save failure"))
+}
+
 fn checksum(payload: &[u8]) -> u64 {
     let mut hash = Fnv64::default();
     hash.write(b"charon-save-checksum-v1");
@@ -378,6 +416,30 @@ mod tests {
         fs::write(root.join(".generation-2.tmp"), b"occupied temp name").unwrap();
         assert!(matches!(store.save(b"candidate"), Err(StorageError::Io(_))));
         assert_eq!(store.load_latest().unwrap().payload, b"committed");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn injected_write_flush_and_publish_failures_keep_last_valid_generation() {
+        let root = temp_root();
+        let store = GenerationStore::new(&root);
+        store.save(b"committed generation").unwrap();
+        for point in [
+            SaveFaultPoint::CreateTemp,
+            SaveFaultPoint::PartialWrite,
+            SaveFaultPoint::AfterWrite,
+            SaveFaultPoint::Flush,
+            SaveFaultPoint::Rename,
+        ] {
+            assert!(matches!(
+                store.save_injected(b"candidate generation", Some(point)),
+                Err(StorageError::Io(_))
+            ));
+            let loaded = store.load_latest().unwrap();
+            assert_eq!(loaded.generation, 1);
+            assert_eq!(loaded.payload, b"committed generation");
+            assert!(!root.join(".generation-2.tmp").exists());
+        }
         let _ = fs::remove_dir_all(root);
     }
 }

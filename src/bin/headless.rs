@@ -28,7 +28,7 @@ fn main() {
     println!(
         "headless simulation complete: ticks={}, cells={}, fingerprint={:016x}, elapsed_ms={}",
         world.tick_count,
-        world.cells.len(),
+        world.cell_count(),
         world.state_fingerprint(),
         started.elapsed().as_millis()
     );

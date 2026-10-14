@@ -1,4 +1,4 @@
-//! Deterministic player motion using canonical Q16.16 state.
+//! Q16.16を正規状態として使い、tickと衝突走査順から再現可能なPlayer移動を計算します。
 
 use crate::core::fixed::{Fixed, FixedError};
 use crate::simulation::determinism::sample_u32;
@@ -44,7 +44,8 @@ impl std::fmt::Display for PlayerError {
 }
 impl std::error::Error for PlayerError {}
 
-/// Canonical player state. Floating point is used only for visual particles/rendering.
+/// 正規状態として保存するPlayerです。位置・速度・寸法は固定小数点で保持し、浮動小数点は表示演出だけに使います。
+/// この分離により表示頻度やGPU差が移動結果へ混入せず、snapshotとReplayで同じ衝突位置を再現できます。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Player {
     pub x: Fixed,

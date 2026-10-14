@@ -1,4 +1,5 @@
-//! Checked signed Q16.16 arithmetic for canonical simulation quantities.
+//! 正規simulation量に使う符号付きQ16.16固定小数点演算を提供します。
+//! 加減乗除のoverflowとゼロ除算をpanicへ変えず、呼び出し側がtransactionを中断できるerrorで返します。
 
 use std::fmt;
 

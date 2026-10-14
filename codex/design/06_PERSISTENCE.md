@@ -27,7 +27,7 @@ manifestにはmagic、schema version、simulation version、generator version、
 
 codecは長さ・サイズ・座標・ID・timer整合性・重複参照を検証します。圧縮爆弾を避けるため、宣言サイズと実出力の両方に上限を設けます。checksumは破損検出であり、悪意ある改変に対する認証とは称しません。
 
-Prototype実装（2026-10-14）: `World::encode_snapshot/decode_snapshot`はlittle-endianのschema/simulation/generator version、registry fingerprint、有限矩形、stored/active remote chunk区分、有限初期regionのactive set mode/list、lease ID/source/region/mode/next ID、有限セルthermal energy、視覚粒子を保持し、未知material、未対応flags、範囲超過lease、非finite particle値、trailing bytesを拒否します。`GameSession`は別codecを持ち、tick一致とcontent参照を検証したbundle APIでWorld・game状態・Q16.16 Player状態を一体として候補復元します。bundle magicはPlayer収録に伴いv2です。`GenerationStore`はWorld snapshotまたはWorld+GameSession+Player bundleを最大64MiBのpayloadとして保存し、generation番号・length・FNV診断checksumを持つファイルをflush後に同一directory内renameで公開します。最新3世代を保持し、新しい世代の検証失敗時は旧世代を返します。checksumは認証ではなく、directory fsync、OS別power-loss保証、stable-name dictionary、seed/config、AI、pending jobs、material別熱容量・timer/attachment state、migrationは含みません。現状snapshot schema versionは4、simulation versionは5で、互換migrationを提供しません。
+現行実装（2026-10-15）: `World::encode_snapshot/decode_snapshot`はlittle-endianのschema/simulation/generator version、registry fingerprint、有限矩形、stored/active remote chunks、有限初期region active set、lease ID/source/region/mode/next ID、有限/remote thermal energy sidecar、material issued/consumed台帳、固定容量EntityId allocator、未来tick command queue、視覚粒子を保持し、未知material、未対応flags、範囲超過lease、非finite particle値、不正allocator/queue、trailing bytesを拒否します。snapshot schema v9ではremote chunkの各セルenergyも保存し、hashへ含めます。`GameSession`は別codecを持ち、tick一致とcontent参照を検証したbundle APIでWorld・game状態・Q16.16 Player状態を一体として候補復元します。bundle magicはPlayer収録に伴いv2です。`ReplayLog` v2はPlayer入力、現行WorldCommand（brushとlease/visible-domain操作）をtick/source/sequence順に再生し、失敗時はcandidateをpublishしません。World+Player canonical state hashは保存codecから視覚particleを除いたsimulation projectionとPlayer codecを連結するFNV-1a 64-bitで、演出粒子はReplay初期照合にも含みません。暗号学的hashではありません。`GenerationStore`はWorld snapshotまたはWorld+GameSession+Player bundleを最大64MiBのpayloadとして保存し、generation番号・length・FNV診断checksumを持つファイルをflush後に同一directory内renameで公開します。最新3世代を保持し、新しい世代の検証失敗時は旧世代を返します。temp作成、header後のpartial write、flush、rename前の失敗注入を追加し、旧世代が残ることを検証しました。checksumは認証ではなく、directory fsync、OS別power-loss保証、stable-name dictionary、seed/config、AI、material別熱容量・timer/instance attachment state、migrationは含みません。現行World snapshot schema versionは9、simulation versionは10で、互換migrationを提供しません。
 
 ## 世代保存
 
@@ -38,7 +38,7 @@ Prototype実装（2026-10-14）: `World::encode_snapshot/decode_snapshot`はlitt
 5. すべて検証済みの世代だけを列挙可能にする。最新有効世代を選び、少なくとも直前2世代も保持する。
 6. 未参照objectのGCは成功世代公開後の別処理で行う。進行中snapshot/保存/読込が参照するobjectは消さない。
 
-`GenerationStore`はheader+payloadを単一ファイルへ書いてfile `sync_all`後に同一directory renameし、checksumを検証してからloadします。write/rename失敗ではtempを消し旧ファイルを保持し、既存テストはtemp衝突・payload上限・checksum破損の旧世代fallbackを確認します。これはobject/manifest方式ではありません。プラットフォームごとのdirectory sync、rename障害、電源断、disk-fullを含むfault injectionは未実施です。Windows・外部drive等に同じ原子性を仮定せず、出荷条件に必要な耐久性試験は未完了です。
+`GenerationStore`はheader+payloadを単一ファイルへ書いてfile `sync_all`後に同一directory renameし、checksumを検証してからloadします。write/rename失敗ではtempを消し旧ファイルを保持し、temp作成・partial write・flush・rename前のfault injection、payload上限、checksum破損の各試験で旧世代fallbackを確認します。これはobject/manifest方式ではありません。実OSのdisk-full、directory sync、電源断、filesystemごとのrename耐久性を保証するfault試験は未実施です。Windows・外部drive等に同じ原子性を仮定せず、出荷条件に必要な耐久性試験は未完了です。
 
 workerが書いている間に世界の可変メモリを読むことは禁止です。Copy-on-write導入はM6で測定後に判断し、M2の簡単な停止snapshotを削除しません。
 

@@ -1,11 +1,11 @@
-//! Versioned deterministic input and world-command recording.
+//! Replay入力とtick指定WorldCommandをversion付きで記録し、再生する機能を提供します。
 
 use crate::entities::player::{Player, PlayerError};
 use crate::simulation::command::{CommandEnvelope, dispatch_command_batch};
 use crate::simulation::world::{SnapshotError, World};
 
 const MAGIC: &[u8; 8] = b"CHARPLY1";
-const REPLAY_VERSION: u16 = 1;
+const REPLAY_VERSION: u16 = 2;
 const MAX_FRAMES: usize = 1_000_000;
 const MAX_COMMANDS_PER_FRAME: usize = 1024;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -19,7 +19,7 @@ pub struct TickInput {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayFrame {
-    /// World tick produced by this input frame (first recorded tick is 1).
+    /// この入力frameが適用されるWorld tickです。最初に記録されるtickは1です。
     pub tick: u64,
     pub input: TickInput,
     pub commands: Vec<CommandEnvelope>,
@@ -57,6 +57,26 @@ impl std::fmt::Display for ReplayError {
 impl std::error::Error for ReplayError {}
 
 impl ReplayLog {
+    /// 正規化されたsimulation WorldとPlayer状態から計算した、安定だが非暗号学的なhashです。
+    /// 表示専用particleは正規simulation状態ではないため、再生一致判定から除外します。
+    pub fn canonical_state_hash(world: &World, player: &Player) -> Result<u64, ReplayError> {
+        let world_bytes = world
+            .encode_canonical_snapshot()
+            .map_err(ReplayError::WorldSnapshot)?;
+        let mut player_bytes = Vec::new();
+        player_bytes
+            .try_reserve_exact(57)
+            .map_err(|_| ReplayError::AllocationFailed)?;
+        player.encode_state(&mut player_bytes);
+        let mut hash = crate::simulation::determinism::Fnv64::default();
+        hash.write(b"charon-canonical-world-player-v1");
+        hash.write_u64(world_bytes.len() as u64);
+        hash.write(&world_bytes);
+        hash.write_u64(player_bytes.len() as u64);
+        hash.write(&player_bytes);
+        Ok(hash.finish())
+    }
+
     pub fn new(world: &World, player: &Player) -> Self {
         Self {
             simulation_version: World::simulation_version(),
@@ -114,7 +134,7 @@ impl ReplayLog {
         Ok(())
     }
 
-    /// Replay into candidates and publish only if every frame succeeds.
+    /// 候補World/Player上で全frameを再生し、最後まで成功した場合だけ呼び出し元へ反映します。
     pub fn play(&self, world: &mut World, player: &mut Player) -> Result<(), ReplayError> {
         if self.simulation_version != World::simulation_version() {
             return Err(ReplayError::UnsupportedVersion);
@@ -174,7 +194,9 @@ impl ReplayLog {
             .frames
             .iter()
             .try_fold(42_usize, |size, frame| {
-                let commands = frame.commands.len().checked_mul(35)?;
+                let commands = frame.commands.iter().try_fold(0_usize, |sum, command| {
+                    sum.checked_add(command_wire_size(command.payload)?)
+                })?;
                 size.checked_add(12)?.checked_add(commands)
             })
             .ok_or(ReplayError::CapacityExceeded)?;
@@ -219,6 +241,47 @@ impl ReplayLog {
                         put_i32(&mut out, center_y);
                         put_i32(&mut out, radius);
                         put_u16(&mut out, material);
+                    }
+                    crate::simulation::command::WorldCommand::RequestChunkLease {
+                        source_id,
+                        policy,
+                        region,
+                        mode,
+                    } => {
+                        out.push(1);
+                        put_u32(&mut out, source_id);
+                        out.push(u8::from(policy.offscreen_enabled));
+                        put_u16(&mut out, policy.active_margin_chunks);
+                        put_u16(&mut out, policy.prefetch_margin_chunks);
+                        for value in [
+                            policy.max_active_chunks,
+                            policy.max_resident_chunks,
+                            policy.max_pinned_chunks,
+                            policy.max_pending_requests,
+                            policy.chunk_memory_budget_bytes,
+                        ] {
+                            put_u64(&mut out, value as u64);
+                        }
+                        put_rect(&mut out, region);
+                        out.push(match mode {
+                            crate::simulation::streaming::LoadMode::Prefetch => 0,
+                            crate::simulation::streaming::LoadMode::Simulate => 1,
+                        });
+                    }
+                    crate::simulation::command::WorldCommand::ReleaseChunkLease { lease_id } => {
+                        out.push(2);
+                        put_u64(&mut out, lease_id);
+                    }
+                    crate::simulation::command::WorldCommand::ApplyVisibleChunkPlan {
+                        plan,
+                        resident_limit,
+                        active_limit,
+                    } => {
+                        out.push(3);
+                        put_rect(&mut out, plan.active);
+                        put_rect(&mut out, plan.resident);
+                        put_u64(&mut out, resident_limit as u64);
+                        put_u64(&mut out, active_limit as u64);
                     }
                 }
             }
@@ -278,14 +341,66 @@ impl ReplayLog {
                 let target_tick = reader.u64()?;
                 let source_id = reader.u32()?;
                 let sequence = reader.u64()?;
-                if target_tick != tick || reader.u8()? != 0 {
+                if target_tick != tick {
                     return Err(ReplayError::InvalidFormat);
                 }
-                let payload = crate::simulation::command::WorldCommand::PaintBrush {
-                    center_x: reader.i32()?,
-                    center_y: reader.i32()?,
-                    radius: reader.i32()?,
-                    material: reader.u16()?,
+                let payload = match reader.u8()? {
+                    0 => crate::simulation::command::WorldCommand::PaintBrush {
+                        center_x: reader.i32()?,
+                        center_y: reader.i32()?,
+                        radius: reader.i32()?,
+                        material: reader.u16()?,
+                    },
+                    1 => {
+                        let source_id = reader.u32()?;
+                        let offscreen_enabled = match reader.u8()? {
+                            0 => false,
+                            1 => true,
+                            _ => return Err(ReplayError::InvalidFormat),
+                        };
+                        let active_margin_chunks = reader.u16()?;
+                        let prefetch_margin_chunks = reader.u16()?;
+                        let mut limits = [0_usize; 5];
+                        for limit in &mut limits {
+                            *limit = usize::try_from(reader.u64()?)
+                                .map_err(|_| ReplayError::CapacityExceeded)?;
+                        }
+                        let region = reader.rect()?;
+                        let mode = match reader.u8()? {
+                            0 => crate::simulation::streaming::LoadMode::Prefetch,
+                            1 => crate::simulation::streaming::LoadMode::Simulate,
+                            _ => return Err(ReplayError::InvalidFormat),
+                        };
+                        crate::simulation::command::WorldCommand::RequestChunkLease {
+                            source_id,
+                            policy: crate::simulation::streaming::StreamingPolicy {
+                                offscreen_enabled,
+                                active_margin_chunks,
+                                prefetch_margin_chunks,
+                                max_active_chunks: limits[0],
+                                max_resident_chunks: limits[1],
+                                max_pinned_chunks: limits[2],
+                                max_pending_requests: limits[3],
+                                chunk_memory_budget_bytes: limits[4],
+                            },
+                            region,
+                            mode,
+                        }
+                    }
+                    2 => crate::simulation::command::WorldCommand::ReleaseChunkLease {
+                        lease_id: reader.u64()?,
+                    },
+                    3 => crate::simulation::command::WorldCommand::ApplyVisibleChunkPlan {
+                        plan: crate::simulation::streaming::VisibleChunkPlan {
+                            active: reader.rect()?,
+                            resident: reader.rect()?,
+                        },
+                        resident_limit: usize::try_from(reader.u64()?)
+                            .map_err(|_| ReplayError::CapacityExceeded)?,
+                        active_limit: usize::try_from(reader.u64()?)
+                            .map_err(|_| ReplayError::CapacityExceeded)?,
+                    },
+                    _ => return Err(ReplayError::InvalidFormat),
                 };
                 commands.push(CommandEnvelope {
                     target_tick,
@@ -326,6 +441,19 @@ fn put_u32(out: &mut Vec<u8>, value: u32) {
 }
 fn put_i32(out: &mut Vec<u8>, value: i32) {
     out.extend_from_slice(&value.to_le_bytes());
+}
+fn put_rect(out: &mut Vec<u8>, rect: crate::simulation::streaming::ChunkRect) {
+    for value in [rect.min.x, rect.min.y, rect.max.x, rect.max.y] {
+        put_i32(out, value);
+    }
+}
+fn command_wire_size(command: crate::simulation::command::WorldCommand) -> Option<usize> {
+    Some(match command {
+        crate::simulation::command::WorldCommand::PaintBrush { .. } => 35,
+        crate::simulation::command::WorldCommand::RequestChunkLease { .. } => 87,
+        crate::simulation::command::WorldCommand::ReleaseChunkLease { .. } => 29,
+        crate::simulation::command::WorldCommand::ApplyVisibleChunkPlan { .. } => 69,
+    })
 }
 fn put_u64(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&value.to_le_bytes());
@@ -379,6 +507,19 @@ impl Reader<'_> {
                 .map_err(|_| ReplayError::InvalidFormat)?,
         ))
     }
+    fn rect(&mut self) -> Result<crate::simulation::streaming::ChunkRect, ReplayError> {
+        crate::simulation::streaming::ChunkRect::new(
+            crate::simulation::chunk::ChunkCoord {
+                x: self.i32()?,
+                y: self.i32()?,
+            },
+            crate::simulation::chunk::ChunkCoord {
+                x: self.i32()?,
+                y: self.i32()?,
+            },
+        )
+        .map_err(|_| ReplayError::InvalidFormat)
+    }
 }
 
 #[cfg(test)]
@@ -386,8 +527,39 @@ mod tests {
     use super::*;
     use crate::{
         core::fixed::Fixed,
-        simulation::{command::WorldCommand, material::SAND},
+        simulation::{command::WorldCommand, material::SAND, particle::SplashParticle},
     };
+
+    #[test]
+    fn replay_and_canonical_hash_ignore_presentation_particles() {
+        let world = World::new(16, 16).unwrap();
+        let player = Player::new(Fixed::ZERO, Fixed::ZERO);
+        let mut replay = ReplayLog::new(&world, &player);
+        replay
+            .record(
+                1,
+                TickInput {
+                    horizontal_axis: 0,
+                    jump_pressed: false,
+                    jump_held: false,
+                },
+                vec![],
+            )
+            .unwrap();
+
+        let mut with_particle = world.clone();
+        with_particle.add_particle(SplashParticle::new(2.0, 3.0, 1.0, -1.0, 2.0, [1, 2, 3, 4]));
+        assert_eq!(world.state_fingerprint(), with_particle.state_fingerprint());
+        assert_eq!(
+            ReplayLog::canonical_state_hash(&world, &player).unwrap(),
+            ReplayLog::canonical_state_hash(&with_particle, &player).unwrap()
+        );
+        let mut playback_player = player;
+        replay
+            .play(&mut with_particle, &mut playback_player)
+            .unwrap();
+        assert_eq!(with_particle.tick_count, 1);
+    }
 
     #[test]
     fn replay_codec_and_candidate_playback_match_live_tick_sequence() {
@@ -448,6 +620,92 @@ mod tests {
         log.play(&mut source, &mut source_player).unwrap();
         assert_eq!(source.state_fingerprint(), expected.state_fingerprint());
         assert_eq!(source_player, expected_player);
+    }
+
+    #[test]
+    fn replay_records_domain_lease_commands_and_canonical_hash() {
+        use crate::simulation::{
+            chunk::ChunkCoord,
+            streaming::{ChunkRect, LoadMode, StreamingPolicy},
+        };
+        let mut world = World::new(16, 16).unwrap();
+        let mut player = Player::new(Fixed::ZERO, Fixed::ZERO);
+        let mut log = ReplayLog::new(&world, &player);
+        let region = ChunkRect::new(ChunkCoord { x: 2, y: 0 }, ChunkCoord { x: 3, y: 1 }).unwrap();
+        log.record(
+            1,
+            TickInput {
+                horizontal_axis: 0,
+                jump_pressed: false,
+                jump_held: false,
+            },
+            vec![
+                CommandEnvelope {
+                    target_tick: 1,
+                    source_id: 1,
+                    sequence: 0,
+                    payload: WorldCommand::RequestChunkLease {
+                        source_id: 9,
+                        policy: StreamingPolicy::default(),
+                        region,
+                        mode: LoadMode::Simulate,
+                    },
+                },
+                CommandEnvelope {
+                    target_tick: 1,
+                    source_id: 2,
+                    sequence: 0,
+                    payload: WorldCommand::ApplyVisibleChunkPlan {
+                        plan: crate::simulation::streaming::VisibleChunkPlan {
+                            active: region,
+                            resident: region,
+                        },
+                        resident_limit: 512,
+                        active_limit: 256,
+                    },
+                },
+            ],
+        )
+        .unwrap();
+        log.record(
+            2,
+            TickInput {
+                horizontal_axis: 0,
+                jump_pressed: false,
+                jump_held: false,
+            },
+            vec![CommandEnvelope {
+                target_tick: 2,
+                source_id: 1,
+                sequence: 1,
+                payload: WorldCommand::ReleaseChunkLease { lease_id: 1 },
+            }],
+        )
+        .unwrap();
+        let bytes = log.encode().unwrap();
+        let log = ReplayLog::decode(&bytes).unwrap();
+        let mut expected = world.clone();
+        let mut expected_player = player.clone();
+        for frame in log.frames() {
+            dispatch_command_batch(&mut expected, frame.commands.clone()).unwrap();
+            expected_player
+                .update(
+                    frame.input.horizontal_axis,
+                    frame.input.jump_pressed,
+                    frame.input.jump_held,
+                    &mut expected,
+                )
+                .unwrap();
+            expected.update().unwrap();
+        }
+        log.play(&mut world, &mut player).unwrap();
+        assert_eq!(world.state_fingerprint(), expected.state_fingerprint());
+        assert_eq!(player, expected_player);
+        assert_eq!(world.chunk_lease_count(), 0);
+        assert_eq!(
+            ReplayLog::canonical_state_hash(&world, &player).unwrap(),
+            ReplayLog::canonical_state_hash(&expected, &expected_player).unwrap()
+        );
     }
 
     #[test]

@@ -22,7 +22,8 @@ pub struct MaterialAttachment {
     pub values: Vec<MaterialProperty>,
 }
 
-/// Combustion data is content only; it has no effect until the M4 reaction/thermal phase exists.
+/// 燃焼物性のcontent宣言です。M4の反応・熱systemが接続されるまではsimulation結果を変えません。
+/// schema段階で保存可能な形式を検証し、未実装の燃焼処理を実行済みだと誤認させないため明示します。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Flammability {
     pub ignition_energy: u32,

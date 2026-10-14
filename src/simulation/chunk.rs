@@ -1,4 +1,4 @@
-//! 64×64 cell storage with checked signed world-coordinate addressing.
+//! 64×64セルchunkの格納、符号付きworld座標変換、容量を事前確認する一括確保を扱います。
 
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -9,7 +9,8 @@ pub const CHUNK_EDGE: i32 = 64;
 pub const CHUNK_AREA: usize = 64 * 64;
 pub const WORLD_COORD_MIN: i32 = -1_048_576;
 pub const WORLD_COORD_MAX: i32 = 1_048_575;
-/// Initial resident allocation limit. Creator policy can raise this in a later API version.
+/// 初期Worldとremote chunkを合わせたresident数の上限です。
+/// 上限を超える要求は確保やWorld公開の前に拒否し、将来のpolicy拡張でも安全限界は維持します。
 pub const INITIAL_MAX_CHUNKS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -35,7 +36,8 @@ pub enum ChunkStoreError {
     AllocationFailed,
 }
 
-/// A finite rectangular region backed by 64×64 chunks.
+/// 有限の矩形領域を64×64セルの固定長chunk配列で保持します。
+/// 矩形外のresident chunkは座標mapで別管理し、同じworld座標APIから読み書きします。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChunkedCells {
     origin_x: i32,
@@ -126,7 +128,8 @@ impl ChunkedCells {
         self.chunks.len() + self.remote_chunks.len()
     }
 
-    /// Atomically reserve additional signed-coordinate chunks outside the initial rectangle.
+    /// 初期矩形外のchunk群を全て確保できることを確認してから一括登録します。
+    /// どれか一つでも範囲・容量・割当条件を満たさない場合、既存storeへ部分追加しません。
     pub fn ensure_chunks(
         &mut self,
         coordinates: &[ChunkCoord],
@@ -182,7 +185,8 @@ impl ChunkedCells {
         Ok(requested.len())
     }
 
-    /// Remove a dynamic chunk. Initial finite-region chunks cannot be evicted by this method.
+    /// resident remote chunkをstoreから削除します。初期有限領域のchunkは削除対象外です。
+    /// 保存やlease確認は呼び出し側の責務であり、この低層関数自体はデータを破棄します。
     pub fn remove_chunk(&mut self, coordinate: ChunkCoord) -> bool {
         if self.chunk_index(coordinate.x, coordinate.y).is_some() {
             return false;

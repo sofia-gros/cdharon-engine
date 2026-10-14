@@ -23,7 +23,7 @@ use crate::core::timing::FixedTickAccumulator;
 use crate::entities::player::Player;
 use crate::render::render_to_frame;
 use crate::simulation::chunk::{CHUNK_EDGE, ChunkCoord};
-use crate::simulation::command::WorldCommand;
+use crate::simulation::command::{CommandEnvelope, CommandQueueError, WorldCommand};
 use crate::simulation::material::{AIR, SAND, WATER};
 use crate::simulation::streaming::{ChunkRect, StreamingPolicy};
 use crate::simulation::world::World;
@@ -41,9 +41,10 @@ pub struct CharonEngine {
     pixels: Option<Pixels<'static>>,
     /// セルオートマトン物理ワールド
     world: World,
-    /// Creator-tunable, bounded offscreen activity and prefetch policy.
+    /// 作者が上限内で変更できる画面外active領域と先読み領域のpolicyです。
     streaming_policy: StreamingPolicy,
     applied_streaming_plan: Option<crate::simulation::streaming::VisibleChunkPlan>,
+    applied_streaming_revision: u64,
     /// プレイヤーキャラクター
     player: Player,
     /// 入力状態管理
@@ -72,6 +73,7 @@ impl CharonEngine {
                 .expect("built-in world dimensions fit configured capacity"),
             streaming_policy: StreamingPolicy::default(),
             applied_streaming_plan: None,
+            applied_streaming_revision: 0,
             // 地上の中央付近に初期配置
             player: Player::new(
                 Fixed::from_raw(310 * Fixed::SCALE),
@@ -86,7 +88,7 @@ impl CharonEngine {
         }
     }
 
-    /// Replace the bounded automatic offscreen policy after validating creator limits.
+    /// 作者指定の画面外policyを上限検証後に置き換えます。既存domainに収まらない設定はWorld側が拒否します。
     pub fn set_streaming_policy(
         &mut self,
         policy: StreamingPolicy,
@@ -313,7 +315,7 @@ impl CharonEngine {
     fn simulation_tick(&mut self) -> Result<(), crate::simulation::command::WorldError> {
         self.world.ensure_tick_available()?;
 
-        // P0: reserve and publish the bounded visible/offscreen chunk domain before tick input.
+        // 入力commandを反映する前に、可視範囲と画面外余白のchunk容量を確保してdomainを確定します。
         let visible = ChunkRect::new(
             ChunkCoord { x: 0, y: 0 },
             ChunkCoord {
@@ -326,13 +328,16 @@ impl CharonEngine {
             .streaming_policy
             .plan_visible(visible)
             .map_err(|_| crate::simulation::command::WorldError::WorldCapacityExceeded)?;
-        if self.applied_streaming_plan != Some(plan) {
+        if self.applied_streaming_plan != Some(plan)
+            || self.applied_streaming_revision != self.world.domain_revision()
+        {
             self.world.apply_visible_chunk_plan(
                 plan,
                 self.streaming_policy.max_resident_chunks,
                 self.streaming_policy.max_active_chunks,
             )?;
             self.applied_streaming_plan = Some(plan);
+            self.applied_streaming_revision = self.world.domain_revision();
         }
 
         // 1. マウス操作によるマテリアル注ぎ込み & 掘削破壊
@@ -355,6 +360,24 @@ impl CharonEngine {
             self.apply_brush(3, SAND);
         }
 
+        let events = self
+            .world
+            .dispatch_pending_commands()
+            .map_err(|error| match error {
+                CommandQueueError::AllocationFailed => {
+                    crate::simulation::command::WorldError::AllocationFailed
+                }
+                CommandQueueError::WrongTick if self.world.tick_count == u64::MAX => {
+                    crate::simulation::command::WorldError::TickOverflow
+                }
+                _ => crate::simulation::command::WorldError::InvalidWorldDimensions,
+            })?;
+        for event in events {
+            if let Err(error) = event.result {
+                eprintln!("World command rejected: {error:?}");
+            }
+        }
+
         // 2. プレイヤーの移動・ジャンプ・水相互作用の更新
         let input_x = self.input.get_horizontal_axis();
         let jump_pressed = self.input.is_jump_just_pressed();
@@ -369,13 +392,26 @@ impl CharonEngine {
     }
 
     fn apply_brush(&mut self, radius: i32, material: u16) {
+        let Some(target_tick) = self.world.tick_count.checked_add(1) else {
+            eprintln!("World command rejected: tick counter overflow");
+            return;
+        };
+        let Some(sequence) = self.world.next_command_sequence(target_tick, 0) else {
+            eprintln!("World command rejected: source sequence overflow");
+            return;
+        };
         let command = WorldCommand::PaintBrush {
             center_x: self.input.mouse_x,
             center_y: self.input.mouse_y,
             radius,
             material,
         };
-        if let Err(error) = self.world.apply_command(command) {
+        if let Err(error) = self.world.submit_command(CommandEnvelope {
+            target_tick,
+            source_id: 0,
+            sequence,
+            payload: command,
+        }) {
             eprintln!("World command rejected: {error:?}");
         }
     }

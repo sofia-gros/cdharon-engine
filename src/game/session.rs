@@ -1,4 +1,4 @@
-//! Deterministic small game-state slice: mining, crafting, combat, and checkpoints.
+//! 採掘、craft、combatとcheckpointを持つ決定的なgame状態をWorldから分離して管理します。
 
 use crate::entities::player::Player;
 use crate::game::inventory::{Inventory, InventoryError, ItemStack, Recipe};
@@ -21,6 +21,7 @@ pub enum GameError {
     InvalidState,
     EmptyTarget,
     WorldChanged,
+    World(crate::simulation::command::WorldError),
 }
 
 impl std::fmt::Display for GameError {
@@ -88,7 +89,7 @@ impl GameSession {
         })
     }
 
-    /// Commit a mined block's item reward atomically before removing its world cell.
+    /// 採掘cellを除去する前に報酬item容量と台帳を予約し、両方の更新を一括確定します。
     pub fn reserve_mining_reward(&mut self, count: u32) -> Result<(), GameError> {
         self.inventory.add(ItemStack {
             key: self.ore_item.clone(),
@@ -97,7 +98,7 @@ impl GameSession {
         Ok(())
     }
 
-    /// Stage inventory capacity before removing a cell; a failed world compare leaves inventory untouched.
+    /// cell除去より先にinventory候補を準備します。材質比較やWorld更新が失敗した場合は報酬を反映しません。
     pub fn mine_cell(
         &mut self,
         world: &mut World,
@@ -113,7 +114,10 @@ impl GameSession {
             key: item_key.to_owned(),
             count: 1,
         })?;
-        if !world.remove_cell_if_material(x, y, material) {
+        if !world
+            .remove_cell_if_material(x, y, material)
+            .map_err(GameError::World)?
+        {
             return Err(GameError::WorldChanged);
         }
         self.inventory = staged;

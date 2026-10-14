@@ -42,7 +42,7 @@ P4は現在のセルと8近傍、4×4領域の占有を使った局所支持ル�
 
 ## 熱と反応
 
-Prototype実装注記（simulation version 5）: `World`は有限矩形の各cellに`i32` thermal energy sidecarを持ち、World生成時にP6用delta/output scratchを確保します。現在は等熱容量・一定係数1/8の`diffuse_energy_into` scalar solverをP5移動後に呼び、移動演算はCellCoreとenergyを一緒にswapします。有限cellのenergyはsnapshotとdiagnostic fingerprintに含みます。material別`c/k`、相転移・燃焼、remote chunk sidecar、inactive/active境界を絶縁するmasked fluxは未実装です。従って下記のenthalpy設計全体が実装されたわけではなく、M4出口も未通過です。
+現行実装注記（thermal solverはSIM v5で導入、現在のWorldはSIM v10）: `World`は有限矩形とremote chunkの各cellに`i32` thermal energy sidecarを持ち、World生成時に有限領域のP6用delta/output scratchを確保します。有限領域は等熱容量・一定係数1/8の整数scalar solverで拡散し、移動演算はCellCoreとenergyを一緒にswapします。inactive finite chunkとの対fluxはマスクし、凍結中はenergyを保持します。remote energyは移動・snapshot・fingerprint/hash対象ですが、remote内の拡散solverとfinite/remote間masked fluxは未実装です。material別`c/k`、相転移・燃焼も未実装です。従って下記のenthalpy設計全体が実装されたわけではなく、M4出口も未通過です。
 
 熱の正規値はゲーム用固定エネルギー量`E:i32`、顕熱容量`c`は1〜255の整数です。相変化しない材の温度は有理数`T=E/c`。相変化familyは共通energy原点を持つ単調なpiecewise enthalpy tableから有理数温度を求め、潜熱区間では温度を一定にします。表示だけでfloorし、flux計算前に温度を整数丸めしません。物質変換時にもenergyを引き継ぎます。emptyも基準熱容量を持ち、セル交換時にenergyを交換します。温度のSI換算は演出上のmappingです。
 

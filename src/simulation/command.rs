@@ -1,4 +1,4 @@
-//! Simulationへ提出できる、検証可能な世界編集コマンド。
+//! tick、source、sequenceで順序を固定し、検証してからSimulationへ提出する世界編集commandを定義します。
 
 /// 現在の有限worldに対するコマンド。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8,6 +8,20 @@ pub enum WorldCommand {
         center_y: i32,
         radius: i32,
         material: u16,
+    },
+    RequestChunkLease {
+        source_id: u32,
+        policy: crate::simulation::streaming::StreamingPolicy,
+        region: crate::simulation::streaming::ChunkRect,
+        mode: crate::simulation::streaming::LoadMode,
+    },
+    ReleaseChunkLease {
+        lease_id: u64,
+    },
+    ApplyVisibleChunkPlan {
+        plan: crate::simulation::streaming::VisibleChunkPlan,
+        resident_limit: usize,
+        active_limit: usize,
     },
 }
 
@@ -34,12 +48,27 @@ pub enum CommandBatchError {
     AllocationFailed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandQueueError {
+    WrongTick,
+    DuplicateSourceSequence,
+    CapacityExceeded,
+    AllocationFailed,
+    InvalidPendingState,
+}
+
+pub const MAX_PENDING_WORLD_COMMANDS: usize = 4_096;
+
 /// コマンドを拒否した理由。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandError {
     InvalidRadius,
     UnknownMaterial,
     WriteLimitExceeded,
+    AccountingOverflow,
+    AccountingMismatch,
+    AllocationFailed,
+    DomainRejected,
 }
 
 impl std::fmt::Display for CommandError {
@@ -58,8 +87,16 @@ pub enum WorldError {
     ActiveChunkCapacityExceeded,
     PinnedChunkCapacityExceeded,
     LeaseCapacityExceeded,
+    ChunkIsActive,
+    ChunkIsLeased,
+    DomainRejected,
     AllocationFailed,
     InvalidMaterialRegistry,
+    AccountingOverflow,
+    AccountingMismatch,
+    InvalidMaterialState,
+    EntityCapacityExceeded,
+    InvalidEntityIdState,
 }
 
 impl std::fmt::Display for WorldError {
@@ -71,8 +108,16 @@ impl std::fmt::Display for WorldError {
             Self::ActiveChunkCapacityExceeded => write!(f, "active chunk capacity exceeded"),
             Self::PinnedChunkCapacityExceeded => write!(f, "pinned chunk capacity exceeded"),
             Self::LeaseCapacityExceeded => write!(f, "chunk lease capacity exceeded"),
+            Self::ChunkIsActive => write!(f, "active chunk cannot be removed"),
+            Self::ChunkIsLeased => write!(f, "leased chunk cannot be removed"),
+            Self::DomainRejected => write!(f, "world command targets a frozen domain"),
             Self::AllocationFailed => write!(f, "world memory allocation failed"),
             Self::InvalidMaterialRegistry => write!(f, "material registry validation failed"),
+            Self::AccountingOverflow => write!(f, "material ledger counter overflow"),
+            Self::AccountingMismatch => write!(f, "material ledger does not match world contents"),
+            Self::InvalidMaterialState => write!(f, "world contains an invalid material ID"),
+            Self::EntityCapacityExceeded => write!(f, "entity ID capacity exceeded"),
+            Self::InvalidEntityIdState => write!(f, "entity ID allocator state is invalid"),
         }
     }
 }
@@ -83,13 +128,16 @@ impl std::error::Error for WorldError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CommandResult {
     pub cells_written: u32,
+    /// leaseなど安定domain handleを確保したcommandの成功時に設定されます。
+    pub domain_id: Option<u64>,
 }
 
 /// 1コマンドの最大候補セル数。設定変更はsimulation versionへ結び付ける。
 pub const MAX_COMMAND_CANDIDATE_CELLS: u32 = 16_641;
 pub const MAX_BRUSH_RADIUS: i32 = 64;
 
-/// Apply a same-tick command batch in stable target/source/sequence order.
+/// 同じtickのcommand群をtarget/source/sequence順に検証・適用します。
+/// 候補Worldで全件を処理してから公開し、途中の失敗で前半commandだけ残さない契約を持ちます。
 pub fn dispatch_command_batch(
     world: &mut crate::simulation::world::World,
     mut commands: Vec<CommandEnvelope>,

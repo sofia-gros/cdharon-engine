@@ -27,7 +27,33 @@
 
 M1でlegacyの見た目をそのまま正解としてgolden化しません。二重移動や壁抜けの既知問題を残すことになるため、契約に基づく小sceneと再現ログを基準にします。挙動変更でhashが変わる場合は理由とsimulation versionを更新し、無説明で期待値を書き換えません。
 
+## M1出口の実行証拠（2026-10-14）
+
+| Gate項目 | fixture / source test | 確認内容 |
+| --- | --- | --- |
+| V01 | `core::timing::tests::world_and_player_state_match_at_30_60_and_144_hz`; `one_second_produces_sixty_ticks_without_drift`; `negative_world_coordinates_use_euclidean_chunk_mapping`; `tick_overflow_returns_error_without_mutating_world` | 同一60 tickのWorld/Player状態、tick換算、負chunk座標、overflow拒否 |
+| V02 | `test_cell_size_and_alignment`; `moved_cell_is_stamped_and_cannot_move_twice_in_one_tick`; `resident_remote_chunks_advance_in_global_world_scan_order`; `thermal_energy_diffuses_conservatively_and_roundtrips_in_snapshot` | CellCore layout、同tick二重移動防止、remote走査順、sidecar保存/移動 |
+| V03 | `empty_registry_freezes_and_material_id_capacity_is_checked`; `duplicate_and_invalid_names_fail_without_changing_registry`; `freeze_assigns_ids_by_name_and_blocks_registration`; `freeze_rejects_unknown_combustion_product`; entity allocator stale-ID fixture | 空気のみregistry、全65,534作者ID枠と超過、重複/不正名、安定ID、stale generation、容量拒否 |
+| V04 | `transaction_is_atomic_on_overflow_or_bad_order`; `brush_and_mining_update_material_ledger_atomically`; `philox_seeded_small_field_preserves_material_population_over_ticks`; `water_sand_and_dig_use_validated_world_commands` | 変換台帳atomicity、採掘容量予約、小世界fieldで30 tick保存則、既存水/砂/掘削API |
+| V06 | `snapshot_roundtrip_preserves_state_and_rejects_trailing_bytes`; `snapshot_roundtrip_preserves_entity_allocator_and_rejects_stale_ids`; `future_commands_are_sorted_bounded_and_survive_checkpoint`; `replay_records_domain_lease_commands_and_canonical_hash`; `bundle_generation_restores_world_game_and_player_together` | snapshot/load後のallocator・pending queue、再開/replayの状態一致、World/game/Player bundle復元 |
+| C06視覚状態分離 | `core::replay::tests::replay_and_canonical_hash_ignore_presentation_particles` | 演出particleの有無がWorld fingerprint・canonical hash・Replay初期状態検証を変えない |
+
+M1再監査では`cargo check --locked --jobs 1`、`cargo test --locked --jobs 1`（86 passed）、`cargo clippy --all-targets --locked --jobs 1`、`cargo fmt --all -- --check`を実行し、全てpassした。V05/V07〜V12とクロスtarget certificationはM1出口の対象外で、後続gateで検証します。M1を通過扱いにする根拠はこの表のfixture coverageと実行結果であり、全製品契約の完了宣言ではありません。
+
 unsafe/SIMDを追加した場合はscalar対照、境界fuzz、targetごとの試験を追加します。並列を採用する場合はthread数1/2/4/8、worker遅延、異なる完了順でも同じ結果を確認します。
+
+
+## M2出口の実行証拠（2026-10-15）
+
+| Gate項目 | fixture / source test | 確認内容 |
+| --- | --- | --- |
+| V07 | `frozen_quiescent_chunk_matches_full_scan_and_rejoins_on_wake`; `thermal::tests::inactive_cells_keep_energy_and_block_flux_from_active_neighbors`; `inactive_finite_chunk_insulates_thermal_energy_until_reactivated` | 実sleep状態への遷移をassertし、全域scanと8 tick比較後、再active化して4 tick進めたCell/energyが一致。凍結側との熱fluxなし |
+| V08 | `remote_chunks_continue_the_seeded_finite_terrain_and_snapshot_the_seed`; `queued_remote_activation_waits_for_its_tick_and_survives_save_restore`; `powder_crosses_a_finite_to_remote_chunk_edge_in_the_same_tick`; `powder_and_energy_cross_a_remote_to_finite_chunk_edge_together`; `liquid_push_transaction_can_span_a_chunk_boundary`; `rejected_chunk_lease_does_not_publish_chunks_or_consume_an_id` | 同一seedの絶対座標地形、target tickでの遠隔domain公開、両方向の継ぎ目移動、3セル押し出しとsidecar追従、容量拒否のatomicity |
+| V09 | `injected_write_flush_and_publish_failures_keep_last_valid_generation`; `rejected_oversized_save_preserves_latest_generation`; `generations_roundtrip_retain_previous_and_fallback_after_corruption` | temp作成・header後partial write・flush・rename前の故障、容量超過、checksum破損で旧有効世代を保持 |
+
+M2 gateでは`cargo test --locked --jobs 1`（99 passed）、`cargo check --locked --jobs 1`、`cargo clippy --all-targets --locked --jobs 1`、`cargo fmt --all -- --check`を実行し、全てpassしました。chunk data source/IO workerは未実装のため、要求済みchunkはactivation対象tickのP0で同期生成・確保します。世代保存ではtemp作成、partial write、flush、publish前、上限超過のfault injectionにより既存有効世代が残ることを確認しました。実OS上のdisk-full再現、directory fsync、電源断耐性はこのfixtureから保証しません。remote熱拡散とWorld座標を持つentity更新は後続工程の対象です。M2ではsleep候補経路を実装し、恒等条件を満たすchunkへの遷移と起床後の参照simulation一致を検証しました。
+
+
 
 ## 性能予算（暫定）
 

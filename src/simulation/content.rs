@@ -136,7 +136,8 @@ pub fn parse_material_toml(source: &str) -> Result<MaterialDef, ContentError> {
         builder = builder.flammability(flammability);
     }
     let definition = builder.build();
-    // Run runtime registration validation on a candidate registry before returning user data.
+    // 作者入力を返す前に仮registryへ登録し、runtimeと同じ名前・物性・参照検証を通します。
+    // parseだけ通ってWorld構築時に初めて失敗する状態を避け、正規registryは変更しません。
     let mut validation = MaterialRegistry::with_default_materials_builder();
     validation
         .register(definition.clone())
@@ -154,7 +155,8 @@ pub fn register_material_toml(
         .ok_or(ContentError::InvalidField("empty pack"))
 }
 
-/// Register a complete content pack in a candidate registry; partial packs are never published.
+/// content pack全体を候補registry上で検証し、全定義が通ったときだけ呼び出し元へまとめて公開します。
+/// pack途中の不正定義で作者registryへ前半だけ登録される部分commitを防ぎます。
 pub fn register_material_pack<'a>(
     registry: &mut MaterialRegistry,
     sources: impl IntoIterator<Item = &'a str>,

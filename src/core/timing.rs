@@ -53,4 +53,67 @@ mod tests {
         assert_eq!(clock.advance(Duration::from_secs(1), 4), 4);
         assert_eq!(clock.advance(Duration::ZERO, 60), 56);
     }
+
+    #[test]
+    fn world_and_player_state_match_at_30_60_and_144_hz() {
+        use crate::core::fixed::Fixed;
+        use crate::entities::player::Player;
+        use crate::simulation::command::WorldCommand;
+        use crate::simulation::material::{SAND, WATER};
+        use crate::simulation::world::World;
+
+        fn run_for_display_rate(rate: u64) -> (u64, u64, u64) {
+            let mut world = World::new(64, 64).unwrap();
+            world
+                .apply_command(WorldCommand::PaintBrush {
+                    center_x: 30,
+                    center_y: 8,
+                    radius: 4,
+                    material: WATER,
+                })
+                .unwrap();
+            world
+                .apply_command(WorldCommand::PaintBrush {
+                    center_x: 4,
+                    center_y: 50,
+                    radius: 5,
+                    material: SAND,
+                })
+                .unwrap();
+            let mut player = Player::new(
+                Fixed::from_integer(12).unwrap(),
+                Fixed::from_integer(1).unwrap(),
+            );
+            let mut clock = FixedTickAccumulator::default();
+            let mut previous_nanos = 0;
+            for frame in 0..rate {
+                let next_nanos = (frame + 1) * 1_000_000_000 / rate;
+                let due = clock.advance(Duration::from_nanos(next_nanos - previous_nanos), 4);
+                previous_nanos = next_nanos;
+                for _ in 0..due {
+                    let next_tick = world.tick_count + 1;
+                    let jump_phase = next_tick % 30;
+                    player
+                        .update(
+                            if next_tick % 40 < 20 { 1 } else { -1 },
+                            jump_phase == 1,
+                            jump_phase < 5,
+                            &mut world,
+                        )
+                        .unwrap();
+                    world.update().unwrap();
+                }
+            }
+            (
+                world.tick_count,
+                world.state_fingerprint(),
+                player.state_fingerprint(),
+            )
+        }
+
+        let at_30_hz = run_for_display_rate(30);
+        assert_eq!(at_30_hz.0, 60);
+        assert_eq!(run_for_display_rate(60), at_30_hz);
+        assert_eq!(run_for_display_rate(144), at_30_hz);
+    }
 }

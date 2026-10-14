@@ -7,7 +7,7 @@ Rustで開発する Falling Sand（セル・オートマトン）方式のゲー
 Noitaのピクセル物理、Terrariaの探索・クラフト、Celesteのアクションを参考に、拡張可能な2Dゲーム基盤を目指しています。Rustの学習と、開発者自身が理解・保守できる設計もプロジェクトの目的です。
 
 > [!NOTE]
-> 現在は開発初期のプロトタイプです。このREADMEは2026年10月14日時点のソースを基準にしています。`gemini/` の設計資料には未実装の構想や旧仕様も含まれます。
+> 現在は開発初期のプロトタイプです。このREADMEは2026年10月15日時点のソースを基準にしています。`gemini/` の設計資料には未実装の構想や旧仕様も含まれます。
 
 ## 現在できること
 
@@ -18,14 +18,15 @@ Noitaのピクセル物理、Terrariaの探索・クラフト、Celesteのアク
 | シミュレーション時計 | 壁時計の経過時間から整数60Hz tickを進め、1回の処理で最大4tickまで実行。余剰tickは保持 |
 | コマンド編集 | 有限worldのブラシ編集を検証し、material・半径・最大候補セル数を確認してから適用 |
 | Game API | 有界slot inventory、atomic recipe craft、採掘報酬とWorld cell除去のcapacity-safe連携、敵HP/攻撃、game state codecとWorld+game+Player bundle codec。GUI・AIは未実装 |
-| World snapshotと世代保存 | 明示little-endian versioned codecで有限領域、remote resident/active chunks、有限領域のactive set、lease、熱energy、tickと視覚粒子を復元。`GenerationStore`はWorld単体とWorld+GameSession+Player bundleをchecksum付き世代ファイルに保存し、同一ディレクトリrenameで公開、直近3世代を保持、破損時に旧世代へfallback。stable-name辞書、directory fsyncを含む電源断保証、migrationは未実装 |
-| 限定Replay API | Q16.16 Player入力とPaintBrush commandをversion/content/初期stateに結び付けて記録・再生。候補World/Playerで成功後commit。全command/domain変更や暗号学的hashを含む製品replayは未実装 |
+| World snapshotと世代保存 | 明示little-endian versioned codecで有限領域、remote resident/active chunks、有限領域のactive set、lease、有限/remote熱energy sidecar、tickと視覚粒子を復元。`GenerationStore`はWorld単体とWorld+GameSession+Player bundleをchecksum付き世代ファイルに保存し、同一ディレクトリrenameで公開、直近3世代を保持、破損・注入したwrite/flush/rename失敗時に旧世代を保持。stable-name辞書、directory fsyncを含む電源断保証、migrationは未実装 |
+| Replayと正規状態hash | version/content/初期stateを検証し、Q16.16 Player入力と現在のWorldCommand（brush、chunk lease、visible plan）をtick/source/sequence順に再生。未来tick commandはWorld snapshotへ保存。World+PlayerのFNV-1a canonical hashは視覚particleを除くsimulation projectionを使用（非暗号）。将来導入するsystem/gameplay commandのreplay対応、stable-name辞書、暗号学的hashは未実装 |
+| 物質変換台帳とEntityId | materialごとのissued/consumedを原子的に追跡し、snapshot load時にworld人口と照合。World所有のgenerational EntityId allocatorは世代・free orderをcheckpoint/hashへ含め、stale参照と容量超過を拒否 |
 | 固定小数点 | overflow/divide-by-zeroを返すQ16.16値型をPlayerの位置・速度・寸法・水しぶき距離状態に接続。Playerは1/16セル刻みでfractional movementと衝突判定を行う。描画と視覚粒子だけfloat |
 | 熱計算 | 等熱容量セルの整数energy拡散scalar referenceをWorldの有限セルsidecarへ接続し、tick・移動・snapshot/hashへ含めた。material別容量/導電率、remote側、phase change・燃焼反応は未実装 |
 | Headless実行 | `cargo run --locked --bin headless -- 600`でウィンドウなしにtickを進行 |
 | Gameplay sample | `cargo run --locked --bin gameplay_sample`で採掘→craft→戦闘→World/game/Player save bundle→復元を実行 |
 | セル格納 | 有限worldを64×64チャンクで保持。符号付き座標の矩形storeを実装（初期resident上限512 chunks）。inactive chunkはresidentのままfreezeしsnapshotへ保存 |
-| Remote chunk更新 | Engine既定で可視chunkから全方向1chunkをactive、2chunkをresident/prefetchとして計画し、容量事前検証後にP0で適用。inactive chunkはresidentのままfreeze。stable lease ID/source/region/modeとactive stateをsnapshot/hashへ含め、creatorはrequest/releaseと検証付きpolicy setterを利用。非同期request queue/確定activation tick・remote sidecar・sleep cache・全物理ルールの境界統一は未実装 |
+| Remote chunk更新 | Engine既定で可視chunkから全方向1chunkをactive、2chunkをresident/prefetchとして計画し、容量事前検証後にP0で適用。未来tick lease commandはWorld queue/snapshot/replayに含み、指定tickのP0で領域準備とactivationを同期commit。inactive chunkはresidentのままfreezeし、視覚particleは停止・再開。次状態が恒等となる十分条件を満たすchunkはsleepし、編集・移動・熱入力で近傍ごとwake。remote熱sidecarはcellと共に移動し、snapshot/hashに含む。粉体・液体はfinite/remote継ぎ目を同じ座標規則で越える。非同期IO provider、remote熱solver、位置を持つWorld entityは未実装 |
 | 地形編集 | マウスブラシによる注水・砂の配置・掘削 |
 | プレイヤー | 左右移動、ジャンプ、4×4領域の密度に基づく衝突判定 |
 | 水との相互作用 | 水中の移動抵抗・浮力、水の攪拌、水しぶき粒子 |
@@ -78,7 +79,7 @@ cargo run --release --locked
 | `vsync` / `framerate-target` | 設定項目は存在しますが、現在のループで制御に使用していません |
 | `engine.debug` / `game.player` / `game.camera` | 設定項目は存在しますが、現在の描画・移動処理には未接続です |
 
-プレイヤーの速度・重力などは[`player.rs`](../src/entities/player.rs)に定義されています。位置・速度はQ16.16で、衝突と水判定は負座標でもfloor準拠の整数範囲を使います。描画と視覚particle生成時のみfloatへ変換します。シミュレーションは60Hzの固定tickへ進み、ジャンプのpressed edgeはtickごとに一度だけ消費します。`ReplayLog`は離散Player入力とPaintBrush commandを記録できますが、全command、domain/policy変更、過負荷診断、完全なstate hashは未実装です。`GenerationStore`は停止World snapshotの世代保存を提供します。World/game/Player bundleのfilesystem adapter、永続辞書・migration、directory durability保証はありません。Engineは論理viewportをvisibleとして、policyに基づくremote chunkのresident/active計画を各tick前に適用します。lease lifecycleは同期request/releaseで、remote entity/sidecarは未実装です。フォーカス喪失中はtickを止め、復帰時に壁時計差を取り込みません。
+プレイヤーの速度・重力などは[`player.rs`](../src/entities/player.rs)に定義されています。位置・速度はQ16.16で、衝突と水判定は負座標でもfloor準拠の整数範囲を使います。描画と視覚particle生成時のみfloatへ変換します。シミュレーションは60Hzの固定tickへ進み、ジャンプのpressed edgeはtickごとに一度だけ消費します。`ReplayLog`は入力と現在定義済みのWorldCommandを記録し、候補World/Playerが全frame通過した後にcommitします。future tick command queue、material ledger、generational EntityId allocatorは停止snapshotとhashへ含みます。`GenerationStore`は停止World snapshotの世代保存を提供します。World/game/Player bundleのfilesystem adapter、永続辞書・migration、directory durability保証はありません。Engineは論理viewportをvisibleとして、policyに基づくremote chunkのresident/active計画を各tick前に適用します。lease lifecycleは同期request/releaseで、remote entity/sidecarは未実装です。フォーカス喪失中はtickを止め、復帰時に壁時計差を取り込みません。
 
 ## コードの構成
 
@@ -155,12 +156,21 @@ GUIを起動せずsimulationを動かすには、tick数を指定します（省
 cargo run --locked --bin headless -- 600
 ```
 
+M0向けの小規模固定sceneを測るには、`b0`〜`b3`の全scene、または個別sceneを指定します。拒否経路fixtureは`failure`です。
+
+```sh
+cargo run --locked --bin m0_baseline -- all 120
+cargo run --locked --bin m0_baseline -- failure
+```
+
+測定条件と結果は[M0ベースライン](design/13_M0_BASELINE.md)を参照してください。これはM6の性能計測を代替しません。
+
 ## 今後の開発テーマ
 
 製品版ロードマップ上の未達項目です。各ゲートの合格条件と依存関係は[ロードマップ](design/09_ROADMAP.md)を参照してください。
 
-- M1: 物質変換台帳、将来tick command queue、全command replay、安定hash、契約fixture
-- M2: 非同期chunk準備と確定activation tick、remote sidecar/entity、active境界一貫性、sleep/Dirty differential、世代保存fault試験
+- M1: 完了（86 unit tests pass、V01〜V04/V06 fixtureと30/60/144Hz同tick一致を確認）
+- M2: 完了（V07〜V09、99 unit tests、tick指定activation、finite/remote境界、実sleepと起床後の参照一致、世代保存fault injectionを確認）。非同期IO provider、World entity統合、remote熱solver、OS別directory fsync・電源断保証は後続工程 |
 - M3: property schema制約、instance attachment state、浮力/drag/hardness、swept terrain collisionと作者sample
 - M4: remoteを含むenergy sidecar、material heat capacity/conductivity、phase change、燃焼・反応出力予約
 - M5: biome/cave/ore/prefab生成、AI保存、UI/audio/accessibility、作者向け遠隔工場sample

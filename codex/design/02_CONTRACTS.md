@@ -44,11 +44,15 @@ EntityIdは`index:u32 + generation:u32`。再利用時にgenerationを増やし�
 
 予約失敗時は入力を消費しません。視覚粒子の寿命終了は許可しますが、物質を担う粒子を寿命で消しません。実在質量の保存とは区別し、ゲーム内物質トークンの増減は変換台帳に記録します。
 
+M1の基準台帳は凍結material IDごとに`issued`と`consumed`の単調カウンターを持ち、ロード時に`issued - consumed == 有効セル数`を検証します。初期terrainはgenesis発行として計上し、単純移動・交換は台帳を変えません。配置/置換/採掘/chunk破棄は変更前に全material差分を検証し、World更新と一緒にcommitします。反応出力・正規粒子・itemとの交換は各機能が有効になった工程で同じ取引へ追加します。
+
 ## C06 — 再現性
 
 保証範囲は、同じsimulation version、content hash、初期状態、tick別コマンド列、正規設定、認定toolchain/targetの組合せです。認定環境同士で一致するまでクロスプラットフォーム保証を掲げません。
 
 物理の乱数はPhilox4x32-10を候補とし、M1で参照ベクトル・キー導出・tuple符号化を固定します。乱数入力はseed、tick、座標またはEntityId、rule domain、sample indexから構成。グローバル可変乱数やthread番号・wall clockを使いません。独立domainのキーを固定手順で導出し、sample数・mappingをsimulation versionに含めます。
+
+Prototypeのcanonical state hashは、停止Worldのsimulation projection（視覚particleを除外）と固定小数点Player codecを長さ付きで連結し、little-endian FNV-1a 64-bitで計算します。保存snapshotは視覚particleを保持しますが、演出の有無や寿命がReplay判定・正規状態hashを変えてはいけません。内容は安定しますが、暗号学的衝突耐性を持たず、認定toolchain/target外の一致を保証しません。診断用World fingerprintとは用途を区別します。
 
 ## C07 — 空間と境界
 

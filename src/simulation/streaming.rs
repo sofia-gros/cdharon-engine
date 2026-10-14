@@ -1,4 +1,4 @@
-//! Deterministic validation and planning for automatic and explicit chunk requests.
+//! 自動表示範囲と明示要求のchunk矩形を検証し、容量予約可能な決定的planへ変換します。
 
 use crate::simulation::chunk::{CHUNK_EDGE, ChunkCoord, WORLD_COORD_MAX, WORLD_COORD_MIN};
 
@@ -10,13 +10,13 @@ pub const DEFAULT_MAX_PENDING_REQUESTS: usize = 64;
 pub const HARD_MAX_PENDING_REQUESTS: usize = 1_024;
 pub const HARD_MAX_PINNED_CHUNKS: usize = 4_096;
 pub const DEFAULT_CHUNK_BUDGET_BYTES: usize = 256 * 1024 * 1024;
-/// Conservative reservation includes cell and current scratch payloads plus metadata headroom.
+/// 1chunk当たりの保守的予約bytesです。セル、現行scratch、sidecar、管理情報の余白を含めます。
 pub const RESERVED_BYTES_PER_CHUNK: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ChunkRect {
     pub min: ChunkCoord,
-    /// Exclusive maximum chunk coordinates.
+    /// 含まない上端chunk座標です。要求範囲はmin以上max未満の半開区間として解釈します。
     pub max: ChunkCoord,
 }
 

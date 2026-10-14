@@ -941,6 +941,62 @@ mod tests {
     }
 
     #[test]
+    fn empty_registry_freezes_and_material_id_capacity_is_checked() {
+        let mut empty = MaterialRegistry::new();
+        empty.try_freeze().unwrap();
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty.get_id_by_name("core:air"), Some(AIR));
+
+        let mut registry = MaterialRegistry::new();
+        let make = |index: usize| MaterialDef {
+            name: format!("test:m{index:05}"),
+            behavior: Behavior::Solid,
+            mass_per_cell: 1,
+            dispersion: 0,
+            max_fall_speed: 0,
+            flow_speed: 0,
+            can_be_washed_away: false,
+            texture: [[0; 4]; 64],
+            authoring: MaterialAuthoring::default(),
+        };
+        for index in 0..=u16::MAX as usize - 2 {
+            registry.register(make(index)).unwrap();
+        }
+        assert_eq!(registry.len(), u16::MAX as usize);
+        assert_eq!(
+            registry.register(make(u16::MAX as usize)),
+            Err(MaterialRegistryError::CapacityExceeded)
+        );
+    }
+
+    #[test]
+    fn duplicate_and_invalid_names_fail_without_changing_registry() {
+        let mut registry = MaterialRegistry::new();
+        let make = |name: &str| MaterialDef {
+            name: name.to_string(),
+            behavior: Behavior::Solid,
+            mass_per_cell: 1,
+            dispersion: 0,
+            max_fall_speed: 0,
+            flow_speed: 0,
+            can_be_washed_away: false,
+            texture: [[0; 4]; 64],
+            authoring: MaterialAuthoring::default(),
+        };
+        registry.register(make("test:valid")).unwrap();
+        let before = registry.len();
+        assert_eq!(
+            registry.register(make("test:valid")),
+            Err(MaterialRegistryError::DuplicateName("test:valid".into()))
+        );
+        assert!(matches!(
+            registry.register(make("Invalid Name")),
+            Err(MaterialRegistryError::InvalidName(_))
+        ));
+        assert_eq!(registry.len(), before);
+    }
+
+    #[test]
     fn creator_mass_typed_properties_attachments_and_flammability_register() {
         use crate::simulation::authoring::{Flammability, MaterialAttachment, PropertyValue};
         let mut registry = MaterialRegistry::with_default_materials_builder();

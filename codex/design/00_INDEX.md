@@ -15,6 +15,7 @@
 | [07_VALIDATION.md](07_VALIDATION.md) | テスト、性能予算、出荷判定 |
 | [08_RESEARCH.md](08_RESEARCH.md) | 一次資料、研究の適用条件、実験計画 |
 | [09_ROADMAP.md](09_ROADMAP.md) | 依存関係付き工程、移行手順、完了条件 |
+| [13_M0_BASELINE.md](13_M0_BASELINE.md) | 開発環境、check/test、固定scene測定、再現scene |
 | [10_DECISIONS_AND_AUDIT.md](10_DECISIONS_AND_AUDIT.md) | 判断理由、文書間の整合性、未解決事項 |
 | [11_MATERIAL_AUTHORING.md](11_MATERIAL_AUTHORING.md) | 重さ・浮力・可燃性、型付き属性の定義・アタッチ |
 | [12_OFFSCREEN_CHUNK_API.md](12_OFFSCREEN_CHUNK_API.md) | 既定ONの画面外ロード、遠隔保持API、作者による制限変更 |

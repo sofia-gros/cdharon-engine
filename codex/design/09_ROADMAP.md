@@ -1,6 +1,6 @@
 # 製品版までのロードマップ
 
-日付による納期ではなく、合格条件で進める工程です。現時点では全工程未完了。既存コードはM0のprototypeとして扱います。
+日付による納期ではなく、合格条件で進める工程です。M0は2026-10-14、M1は同日、M2は2026-10-15に各出口条件を通過しました。M3〜M8は未完了です。プロジェクト全体は開発初期段階であり、通過済みgateの実装をprototype扱いで済ませず、記録された出口条件とfixtureに照らして管理します。
 
 ```mermaid
 flowchart LR
@@ -16,19 +16,21 @@ flowchart LR
 
 ## M1〜M5ゲート状況
 
-2026-10-14時点で、M1〜M5の出口条件を満たしたゲートはありません。下表は「先行実装」を「ゲート通過」と誤読しないための状態表です。
+2026-10-15時点のゲート状態です。M1/M2は記載したfixture/checkを実行して通過しました。先行実装だけのM3〜M5は未通過のままです。
 
 | Gate | 状態 | 出口を阻む代表的な未達項目 |
 | --- | --- | --- |
-| M1 | 未通過 | 物質台帳、全command/domain replay、認定state hash、V01〜V06 fixture matrix |
-| M2 | 未通過 | activation tick準備queue、finite/remote rule統合、remote sidecar、sleep differential、保存fault injection |
+| M1 | **完了** | — |
+| M2 | **完了** | 非同期chunk IO provider、World位置entity、remote熱solver、OS別directory fsync・電源断保証は将来工程 |
 | M3 | 未通過 | instance property/attachment state、浮力・drag・hardness、swept collision、作者sample |
-| M4 | 未通過 | active boundary対応・remote熱sidecar、材質熱容量/導電率、phase/reaction reservation、fuel timer |
+| M4 | 未通過 | remote領域を含む熱solver、材質熱容量/導電率、phase/reaction reservation、fuel timer |
 | M5 | 未通過 | stable world generation、AI、UI/audio/accessibility、通常APIだけを使う遠隔工場sample |
 
-## M0 — 現状の固定と設計の基準化
+## M0 — 現状の固定と設計の基準化 — 完了
 
 既存source、dependencies、既知不具合、起動操作を記録。開発機、toolchain、build再現性を確認し、B0〜B3に相当する小さなbaselineを準備します。現行コードを無条件にフォーマットし直して設計変更と混ぜません。
+
+2026-10-14に完了。Rust/Cargo 1.98.1、locked check、72 unit tests、headless 600tick、gameplay sample、開発機hardware情報、小規模B0〜B3 proxyの2回測定と再現可能な拒否sceneを[ベースライン記録](13_M0_BASELINE.md)へ記録した。大規模性能測定はM6対象であり、M0の小規模baselineと混同しない。
 
 **出口:** 現状のcheck/test結果、baseline測定、設計ID一覧、失敗sceneが記録される。現在の資料作成だけでM0完了とはしません。
 
@@ -40,28 +42,30 @@ flowchart LR
 - 原子交換、stamp、物質台帳、容量拒否
 - Philox候補検証・mapping固定、state codec/hash、in-memory checkpoint
 
-2026-10-14の実装記録: `MaterialRegistry`に空気/missing予約定義、`namespace:name`検証、重複拒否、65534件の作者ID上限、freeze時の名前順IDを追加。整数時間accumulatorで60Hz固定tick、1回最大4tick・余剰保持・focus停止を実装。`lib.rs`、描画分離、GUIなしrunner、検証付きbrush command、同tickのtarget/source/sequence batch dispatchとresult event、tick入力edge、Cell外u64 movement stamp、Philox4x32-10 test vectorを追加。Player位置・速度・寸法・歩行距離タイマーをchecked Q16.16へ移行し、1/16セル刻みのfractional collision、離散水平入力、演算失敗時Player rollbackを実装。World+GameSession+Player bundleはv2に更新しPlayerのraw stateを保存・検証する。Worldにはversion/content fingerprintを含む明示little-endian停止snapshotを追加し、有限矩形・remote stored chunks・視覚粒子を復元できる。`ReplayLog`は初期state/content/tickと照合しながらQ16.16 Player入力＋PaintBrush commandをcandidateへ再生し、全frame成功時だけcommitする。これは全command/domain replay、安定した製品hash、stable-name辞書codec、全metadata、atomic filesystem generationではない。物質台帳、command queue、V01〜V06 fixture/target matrix、Playerを含む認定hash比較は残るためM1は未完了。
+2026-10-14 M1実装完了・再監査: `MaterialRegistry`は空気/missing予約、名前検証、重複拒否、作者ID 65,534上限、辞書順freezeをfixtureで検証。Worldに累積material ledger（genesis/issue/consume）を追加し、配置・置換・採掘・remote chunk削除を差分予約後にcommit。World所有generational EntityId allocatorは固定capacity/stale generation/free reuse orderを検証し、checkpoint/snapshot/hashへ保存。未来tick command queue（上限4096、最大1,000,000 tick先、重複拒否、target/source/sequence順）はWorld snapshotへ保存し、既存Engineのbrush入力もqueue経由にした。Replay v2は現行WorldCommand全種（brush、lease acquire/release、visible plan）とQ16.16 Player入力をcandidate再生。停止World snapshot v7/simulation v8へmaterial ledger、EntityId allocator、pending commandを統合。World+Playerのcanonical hashは保存codec由来FNV-1a 64-bit（安定・非暗号）で、視覚particleを除外し、Replay初期照合も演出particleに依存しない。terrain生成は初期化内に限定し、稼働中に台帳を再初期化できない。V01〜V04/V06の証拠は[検証記録](07_VALIDATION.md)に記載。再監査で`cargo check`、`cargo test`（86 passed）、`cargo clippy`、`cargo fmt --check`を通した。stable-name永続辞書、将来追加するcommand種の個別対応、クロスtarget認定、暗号学的hashはM7/将来工程に残るが、M1出口条件は満たした。
 
-M2着手: `ChunkedCells`をWorldの有限セル格納として統合し、64×64割当て、負座標Euclidean mapping、`Available/Unavailable/WorldBoundary` query、resident上限、fallible constructorを実装。Engineの論理viewportからactive/resident planをP0適用し、同期lease request/release、pinned上限、snapshot復元も実装（World snapshot v4/simulation v5）。`GenerationStore`はchecksum付きWorld snapshotまたはWorld/game/Player bundle世代を最大3つ保持し、旧世代fallbackを持つ。未実装は非同期request queue/確定activation tick、finite↔remote全ruleの統合、remote entity/particle/thermal sidecar、sleep/Dirty、directory durabilityとdisk fault injection、M2 differential fixture。従ってM2未完了。
+2026-10-15 M2出口通過: bounded future `WorldCommand` queueのlease requestはtarget tickとsnapshot/replayに保存され、対象tickのP0でchunkを生成・確保してからactive domainへ一括公開します。remote terrainはseedと絶対world座標からfinite領域と同じ規則で生成し、material ledgerも同じcommit境界で更新します。遠隔cellはglobal world座標順で更新され、finite/remote境界のpowder落下とliquid wash pushはmaterial、熱sidecar、movement stampを原子的に移動します。有限領域のinactive境界は熱fluxを遮断し、inactive domainの視覚particleは保持して再activation後に寿命を進めます。恒等条件を満たすactive chunkはsleepし、変更時には近傍をwakeします。`GenerationStore`はtemp作成、partial write、flush、publish前、payload上限超過のfault injectionで旧有効世代が残ることを確認します。snapshot schema v9/simulation v10。V07/V08/V09のfixtureと結果は[検証記録](07_VALIDATION.md)を参照してください。非同期IO worker、World位置entity component、remote熱solver、directory fsync/OS別電源断保証は後続工程です。
 
-再現性の是正: playerの水しぶき演出に残っていたthread-local xorshiftをPhilox由来のtick/座標/domain/sample値へ置換。Playerのcanonical stateはQ16.16へ移行済み。残項目は入力replay、物質台帳、Player/world/game統合hashおよび契約fixture。
+再現性の是正: playerの水しぶき演出に残っていたthread-local xorshiftをPhilox由来のtick/座標/domain/sample値へ置換。Playerのcanonical stateはQ16.16へ移行済み。replay、物質台帳、World+Player hash、M1 fixtureはM1実装完了記録を参照。
 
-M3先行実装: `mass_per_cell`をセル交換rankへ接続し、typed Rust property/attachment・flammability dataとfreeze時のmaterial product参照検証、64KiB上限/unknown-field拒否付きTOML schema v1を追加。軽量な浮力係数・標準property schema、instance attachment state、精密swept/camera対応、物質台帳は未実装。M2の遠隔lease/save exitを通過するまではM3完了扱いにしない。
+M3先行実装: `mass_per_cell`をセル交換rankへ接続し、typed Rust property/attachment・flammability dataとfreeze時のmaterial product参照検証、64KiB上限/unknown-field拒否付きTOML schema v1を追加。軽量な浮力係数・標準property schema、instance attachment state、精密swept/camera対応、attachment transfer accountingは未実装。M2の遠隔lease/save exitを通過するまではM3完了扱いにしない。
 
 M5先行実装: `game::inventory`に容量付きslot、namespaced item stack、atomic craftを追加。`GameSession`に採掘（inventory容量を先行予約してからcellを除去）、敵2体のHP/攻撃、game state codecとWorld+game+Player save bundleを追加。`gameplay_sample`実行binで採掘→craft→戦闘→tick→bundle保存/復元を確認する。これはallocator/AI/UI/audioを含む遊べるsampleではなく、M2/M3/M4依存も未完了。M5出口は未通過。
 
-M4先行実装: `simulation::thermal::diffuse_energy`の等熱容量整数flux solverを有限Worldのenergy sidecarへ接続。tick前に確保したscratchを使いP5移動後にenergyを拡散し、移動・snapshot・diagnostic fingerprintへ追従させる。energy保存とsnapshot roundtripをtestする。material別heat capacity/conductivity、inactive domain間の熱境界遮断、remote sidecar、phase change、燃焼timer・atomic exhaust reaction・物質台帳、thermal differential fixtureが未実装のためM4未完了。
+M4先行実装: `simulation::thermal::diffuse_energy`の等熱容量整数flux solverを有限Worldのenergy sidecarへ接続。tick前に確保したscratchを使いP5移動後にenergyを拡散し、移動・snapshot・diagnostic fingerprintへ追従させる。energy保存とsnapshot roundtripをtestする。material別heat capacity/conductivity、inactive domain間の熱境界遮断、remote sidecar、phase change、燃焼timer・atomic exhaust reactionと対応するledger連携、thermal differential fixtureが未実装のためM4未完了。
 
 ## M1の実装順
 
 1. 安全なmaterial registryと固定tick時計（freezeと名前順IDを実装）
 2. simulationをlibrary化し、rendererを`World`から分離、headless実行経路を作る（World直読みviewは残る）
-3. command/event境界とtickごとの入力確定を導入する（brush validation、tick/source/sequence順のbatch dispatch、result event、held/edge入力、Player+PaintBrush限定ReplayLogまで実装。future queueと全command/domain replayは未実装）
-4. cell交換・stamp・物質台帳を原子的にする（2-cell/3-cell移動stampまで実装、台帳未実装）
-5. stable ID freeze、Philox tuple、状態codec/hash、checkpointを加える（stable ID/Philox/World codec+fingerprint/Player Q16.16+bundle v2は実装。replay/full hash/物質台帳は未実装）
+3. command/event境界とtickごとの入力確定を導入する（bounded future queue、tick/source/sequence順dispatch、result event、held/edge入力、現行command/domain APIのreplayを実装）
+4. cell交換・stamp・物質台帳を原子的にする（交換stampとmaterial ledger、配置/採掘/remote削除のtransactionを実装）
+5. stable ID freeze、Philox tuple、状態codec/hash、checkpointを加える（generational allocator、World snapshot v7、Replay v2、World+Player canonical hashを実装）
 6. V01〜V04/V06を満たす契約ベースの小世界fixtureを固定する
 
 各項目は1〜5を終えてから次へ進み、検証を通過しない項目の後続依存は開始しない。現プロトタイプのID割当てや保存互換性はまだ公開契約として扱わない。
+
+2026-10-14 M1着手時の履歴: `core::timing::tests::world_and_player_state_match_at_30_60_and_144_hz`を追加し、60 tick分の同一入力で3表示頻度間のWorld/Player fingerprint一致を確認した。以降の完了作業と全出口証拠は上記M1実装記録および[検証記録](07_VALIDATION.md)を参照。
 
 **出口:** V01〜V04、V06の小世界版が合格。30/60/144Hz表示で同tick状態一致。空registry/上限でpanicしない。旧操作の水・砂・掘削が新APIで動く。
 

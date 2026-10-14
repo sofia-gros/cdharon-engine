@@ -1,4 +1,4 @@
-//! Bounded slot inventory and deterministic atomic recipe crafting.
+//! 上限付きslot inventoryと、入力材の不足・出力容量不足で部分消費しない決定的craft処理を提供します。
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ItemStack {
