@@ -1,0 +1,31 @@
+schema_version = 1
+name = "sample:light_wood"
+behavior = "solid"
+mass_per_cell = 450
+color = [130, 82, 42, 255]
+can_be_washed_away = false
+
+[[properties]]
+key = "sample:buoyant"
+kind = "bool"
+boolean = true
+
+[[properties]]
+key = "sample:mana_capacity"
+kind = "integer"
+integer = 12
+
+[[attachments]]
+kind = "sample:mana_receiver"
+version = 1
+
+[[attachments.values]]
+key = "sample:channel"
+kind = "enum"
+string = "blue"
+
+[flammability]
+ignition_energy = 700
+fuel_ticks = 240
+heat_per_tick = 6
+exhaust_material = "core:air"
