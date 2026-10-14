@@ -136,7 +136,13 @@ impl ChunkedCells {
         resident_limit: usize,
         fill: Cell,
     ) -> Result<usize, ChunkStoreError> {
-        let mut requested = coordinates.to_vec();
+        // 要求座標を複製する一時領域もfallible APIで確保します。
+        // ここでOOMをpanicにすると、呼び出し元がWorldを公開する前に失敗を処理できません。
+        let mut requested = Vec::new();
+        requested
+            .try_reserve_exact(coordinates.len())
+            .map_err(|_| ChunkStoreError::AllocationFailed)?;
+        requested.extend_from_slice(coordinates);
         requested.sort_unstable();
         requested.dedup();
         if requested.iter().any(|coordinate| {

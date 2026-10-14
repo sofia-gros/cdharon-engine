@@ -137,7 +137,9 @@ pub const MAX_COMMAND_CANDIDATE_CELLS: u32 = 16_641;
 pub const MAX_BRUSH_RADIUS: i32 = 64;
 
 /// 同じtickのcommand群をtarget/source/sequence順に検証・適用します。
-/// 候補Worldで全件を処理してから公開し、途中の失敗で前半commandだけ残さない契約を持ちます。
+/// tick不一致や重複sequenceなどbatch全体の形式不備は、最初のWorld変更前に拒否します。
+/// 形式が妥当なら各commandを個別transactionとして適用し、拒否commandのerrorもeventに残します。
+/// そのため同じbatchの別commandが成功しても、拒否commandの部分変更は各transaction内で起こりません。
 pub fn dispatch_command_batch(
     world: &mut crate::simulation::world::World,
     mut commands: Vec<CommandEnvelope>,
@@ -230,6 +232,45 @@ mod batch_tests {
         );
         assert_eq!(
             world.get_cell(1, 1).material,
+            crate::simulation::material::AIR
+        );
+    }
+
+    #[test]
+    fn command_rejection_is_reported_without_rolling_back_valid_siblings() {
+        let mut world = World::new(8, 8).unwrap();
+        let commands = vec![
+            CommandEnvelope {
+                target_tick: 1,
+                source_id: 1,
+                sequence: 0,
+                payload: WorldCommand::PaintBrush {
+                    center_x: 1,
+                    center_y: 1,
+                    radius: 0,
+                    material: WATER,
+                },
+            },
+            CommandEnvelope {
+                target_tick: 1,
+                source_id: 1,
+                sequence: 1,
+                payload: WorldCommand::PaintBrush {
+                    center_x: 2,
+                    center_y: 2,
+                    radius: 0,
+                    material: u16::MAX,
+                },
+            },
+        ];
+
+        let events = dispatch_command_batch(&mut world, commands).unwrap();
+
+        assert!(events[0].result.is_ok());
+        assert_eq!(events[1].result, Err(CommandError::UnknownMaterial));
+        assert_eq!(world.get_cell(1, 1).material, WATER);
+        assert_eq!(
+            world.get_cell(2, 2).material,
             crate::simulation::material::AIR
         );
     }

@@ -161,7 +161,9 @@ impl Player {
         })
     }
 
-    /// Advance one canonical simulation tick. `input_x` is restricted to -1, 0, or 1.
+    /// Playerを固定simulationの1tickだけ更新します。`input_x`は-1、0、1に限定します。
+    /// 位置の所属chunkがactive domain外なら、速度・入力・water flagを含む正規状態を一切変更せず停止します。
+    /// これはdomain外entityを経過時間で追いつかせず、再active化後に保存済み状態から再開する規則です。
     pub fn update(
         &mut self,
         input_x: i8,
@@ -176,6 +178,13 @@ impl Player {
             || self.vy.raw().unsigned_abs() > MAX_AXIS_SPEED_RAW
         {
             return Err(PlayerError::VelocityOutOfRange);
+        }
+        let anchor_x =
+            i32::try_from(self.x.floor_i64()).map_err(|_| PlayerError::CoordinateOutOfRange)?;
+        let anchor_y =
+            i32::try_from(self.y.floor_i64()).map_err(|_| PlayerError::CoordinateOutOfRange)?;
+        if !world.is_world_cell_active(anchor_x, anchor_y) {
+            return Ok(());
         }
         let mut next = self.clone();
         next.update_inner(input_x, jump_pressed, jump_held, world)?;
@@ -418,6 +427,54 @@ mod tests {
         let before = player.clone();
         assert!(player.update(2, false, false, &mut world).is_err());
         assert_eq!(player, before);
+    }
+
+    #[test]
+    fn player_state_freezes_outside_active_domain_and_resumes_when_reactivated() {
+        let mut world = World::new(128, 64).unwrap();
+        let resident = crate::simulation::streaming::ChunkRect::new(
+            crate::simulation::chunk::ChunkCoord { x: 0, y: 0 },
+            crate::simulation::chunk::ChunkCoord { x: 2, y: 1 },
+        )
+        .unwrap();
+        let first_chunk = crate::simulation::streaming::ChunkRect::new(
+            crate::simulation::chunk::ChunkCoord { x: 0, y: 0 },
+            crate::simulation::chunk::ChunkCoord { x: 1, y: 1 },
+        )
+        .unwrap();
+        world
+            .apply_visible_chunk_plan(
+                crate::simulation::streaming::VisibleChunkPlan {
+                    active: first_chunk,
+                    resident,
+                },
+                2,
+                2,
+            )
+            .unwrap();
+        let mut player = Player::new(
+            Fixed::from_integer(70).unwrap(),
+            Fixed::from_integer(10).unwrap(),
+        );
+        let saved_state = player.clone();
+
+        // domain外では重力・摩擦・入力edgeを消費せず、Player正規状態を保存値のまま保ちます。
+        player.update(1, true, true, &mut world).unwrap();
+        assert_eq!(player, saved_state);
+
+        // 所属chunkがactiveへ戻った次tickから、同じ保存状態を起点に通常更新を再開します。
+        world
+            .apply_visible_chunk_plan(
+                crate::simulation::streaming::VisibleChunkPlan {
+                    active: resident,
+                    resident,
+                },
+                2,
+                2,
+            )
+            .unwrap();
+        player.update(1, false, false, &mut world).unwrap();
+        assert_ne!(player, saved_state);
     }
 
     #[test]

@@ -1,10 +1,12 @@
 //! 自動表示範囲と明示要求のchunk矩形を検証し、容量予約可能な決定的planへ変換します。
 
-use crate::simulation::chunk::{CHUNK_EDGE, ChunkCoord, WORLD_COORD_MAX, WORLD_COORD_MIN};
+use crate::simulation::chunk::{
+    CHUNK_EDGE, ChunkCoord, INITIAL_MAX_CHUNKS, WORLD_COORD_MAX, WORLD_COORD_MIN,
+};
 
 pub const DEFAULT_MAX_ACTIVE_CHUNKS: usize = 256;
 pub const DEFAULT_MAX_RESIDENT_CHUNKS: usize = 512;
-pub const HARD_MAX_RESIDENT_CHUNKS: usize = 4_096;
+pub const HARD_MAX_RESIDENT_CHUNKS: usize = INITIAL_MAX_CHUNKS;
 pub const DEFAULT_MAX_PINNED_CHUNKS: usize = 128;
 pub const DEFAULT_MAX_PENDING_REQUESTS: usize = 64;
 pub const HARD_MAX_PENDING_REQUESTS: usize = 1_024;
@@ -272,6 +274,13 @@ mod tests {
     fn policies_cannot_exceed_hard_or_memory_bounds() {
         let policy = StreamingPolicy {
             chunk_memory_budget_bytes: 1024,
+            ..StreamingPolicy::default()
+        };
+        assert_eq!(policy.validate(), Err(StreamError::InvalidPolicy));
+
+        let policy = StreamingPolicy {
+            max_resident_chunks: HARD_MAX_RESIDENT_CHUNKS + 1,
+            chunk_memory_budget_bytes: (HARD_MAX_RESIDENT_CHUNKS + 1) * RESERVED_BYTES_PER_CHUNK,
             ..StreamingPolicy::default()
         };
         assert_eq!(policy.validate(), Err(StreamError::InvalidPolicy));

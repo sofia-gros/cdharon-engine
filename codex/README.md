@@ -26,7 +26,7 @@ Noitaのピクセル物理、Terrariaの探索・クラフト、Celesteのアク
 | Headless実行 | `cargo run --locked --bin headless -- 600`でウィンドウなしにtickを進行 |
 | Gameplay sample | `cargo run --locked --bin gameplay_sample`で採掘→craft→戦闘→World/game/Player save bundle→復元を実行 |
 | セル格納 | 有限worldを64×64チャンクで保持。符号付き座標の矩形storeを実装（初期resident上限512 chunks）。inactive chunkはresidentのままfreezeしsnapshotへ保存 |
-| Remote chunk更新 | Engine既定で可視chunkから全方向1chunkをactive、2chunkをresident/prefetchとして計画し、容量事前検証後にP0で適用。未来tick lease commandはWorld queue/snapshot/replayに含み、指定tickのP0で領域準備とactivationを同期commit。inactive chunkはresidentのままfreezeし、視覚particleは停止・再開。次状態が恒等となる十分条件を満たすchunkはsleepし、編集・移動・熱入力で近傍ごとwake。remote熱sidecarはcellと共に移動し、snapshot/hashに含む。粉体・液体はfinite/remote継ぎ目を同じ座標規則で越える。非同期IO provider、remote熱solver、位置を持つWorld entityは未実装 |
+| Remote chunk更新 | Engine既定で可視chunkから全方向1chunkをactive、2chunkをresident/prefetchとして計画し、容量事前検証後にP0で適用。未来tick lease commandはWorld queue/snapshot/replayに含み、指定tickのP0で領域準備とactivationを同期commit。inactive chunkはresidentのままfreezeし、Playerは所属chunkがinactiveなら全正規状態を停止して再active時に再開、視覚particleも停止・再開。次状態が恒等となる十分条件を満たすchunkはsleepし、編集・移動・熱入力で近傍ごとwake。remote熱sidecarはcellと共に移動し、snapshot/hashに含む。粉体・液体はfinite/remote継ぎ目を同じ座標規則で越える。非同期IO provider、remote熱solver、位置を持つWorld entityは未実装 |
 | 地形編集 | マウスブラシによる注水・砂の配置・掘削 |
 | プレイヤー | 左右移動、ジャンプ、4×4領域の密度に基づく衝突判定 |
 | 水との相互作用 | 水中の移動抵抗・浮力、水の攪拌、水しぶき粒子 |
@@ -79,7 +79,7 @@ cargo run --release --locked
 | `vsync` / `framerate-target` | 設定項目は存在しますが、現在のループで制御に使用していません |
 | `engine.debug` / `game.player` / `game.camera` | 設定項目は存在しますが、現在の描画・移動処理には未接続です |
 
-プレイヤーの速度・重力などは[`player.rs`](../src/entities/player.rs)に定義されています。位置・速度はQ16.16で、衝突と水判定は負座標でもfloor準拠の整数範囲を使います。描画と視覚particle生成時のみfloatへ変換します。シミュレーションは60Hzの固定tickへ進み、ジャンプのpressed edgeはtickごとに一度だけ消費します。`ReplayLog`は入力と現在定義済みのWorldCommandを記録し、候補World/Playerが全frame通過した後にcommitします。future tick command queue、material ledger、generational EntityId allocatorは停止snapshotとhashへ含みます。`GenerationStore`は停止World snapshotの世代保存を提供します。World/game/Player bundleのfilesystem adapter、永続辞書・migration、directory durability保証はありません。Engineは論理viewportをvisibleとして、policyに基づくremote chunkのresident/active計画を各tick前に適用します。lease lifecycleは同期request/releaseで、remote entity/sidecarは未実装です。フォーカス喪失中はtickを止め、復帰時に壁時計差を取り込みません。
+プレイヤーの速度・重力などは[`player.rs`](../src/entities/player.rs)に定義されています。位置・速度はQ16.16で、衝突と水判定は負座標でもfloor準拠の整数範囲を使います。描画と視覚particle生成時のみfloatへ変換します。シミュレーションは60Hzの固定tickへ進み、ジャンプのpressed edgeはtickごとに一度だけ消費します。Playerの所属chunkがinactive domainなら更新全体を止め、再active化後に保存状態から再開します。`ReplayLog`は入力と現在定義済みのWorldCommandを記録し、候補World/Playerが全frame通過した後にcommitします。future tick command queue、material ledger、generational EntityId allocatorは停止snapshotとhashへ含みます。`GenerationStore`は停止World snapshotおよびWorld/game/Player bundleを世代保存します。永続名辞書・migration、directory durability保証はありません。Engineは論理viewportをvisibleとして、policyに基づくremote chunkのresident/active計画を各tick前に適用します。lease lifecycleは同期request/releaseで、汎用World位置entity componentとremote熱solverは未実装です。フォーカス喪失中はtickを止め、復帰時に壁時計差を取り込みません。
 
 ## コードの構成
 
@@ -170,7 +170,7 @@ cargo run --locked --bin m0_baseline -- failure
 製品版ロードマップ上の未達項目です。各ゲートの合格条件と依存関係は[ロードマップ](design/09_ROADMAP.md)を参照してください。
 
 - M1: 完了（86 unit tests pass、V01〜V04/V06 fixtureと30/60/144Hz同tick一致を確認）
-- M2: 完了（V07〜V09、99 unit tests、tick指定activation、finite/remote境界、実sleepと起床後の参照一致、世代保存fault injectionを確認）。非同期IO provider、World entity統合、remote熱solver、OS別directory fsync・電源断保証は後続工程 |
+- M2: 完了（V07〜V09、101 unit tests、tick指定activation、finite/remote境界、実sleepと起床後の参照一致、世代保存fault injectionを確認）。非同期IO provider、汎用World位置entity component、remote熱solver、OS別directory fsync・電源断保証は後続工程 |
 - M3: property schema制約、instance attachment state、浮力/drag/hardness、swept terrain collisionと作者sample
 - M4: remoteを含むenergy sidecar、material heat capacity/conductivity、phase change、燃焼・反応出力予約
 - M5: biome/cave/ore/prefab生成、AI保存、UI/audio/accessibility、作者向け遠隔工場sample

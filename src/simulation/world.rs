@@ -8,7 +8,7 @@ use noise::{Fbm, NoiseFn, SuperSimplex};
 use std::collections::{HashMap, HashSet};
 
 use crate::simulation::cell::Cell;
-use crate::simulation::chunk::{CHUNK_AREA, CHUNK_EDGE, ChunkCoord};
+use crate::simulation::chunk::{CHUNK_AREA, CHUNK_EDGE, ChunkCoord, INITIAL_MAX_CHUNKS};
 use crate::simulation::chunk::{ChunkStoreError, ChunkedCells};
 use crate::simulation::command::{
     CommandBatchError, CommandEnvelope, CommandError, CommandQueueError, CommandResult,
@@ -97,7 +97,8 @@ const SNAPSHOT_VERSION: u16 = 9;
 const SIMULATION_VERSION: u32 = 10;
 const GENERATOR_VERSION: u32 = 2;
 const DEFAULT_WORLD_SEED: u32 = 1337;
-const MAX_SNAPSHOT_BYTES: usize = 512 * CHUNK_AREA * 4 + 16_000_000;
+// 512 chunks分のcell/energy、最大EntityId checkpoint、material台帳、command queueを収容します。
+const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const WORLD_ENTITY_ID_CAPACITY: u32 = 1_000_000;
 
 /// terrain generatorが参照する作者registry内の標準material IDです。
@@ -406,6 +407,16 @@ impl World {
         mut registry: MaterialRegistry,
         seed: u32,
     ) -> Result<Self, WorldError> {
+        if width == 0 || height == 0 || width > 65_536 || height > 65_536 {
+            return Err(WorldError::InvalidWorldDimensions);
+        }
+        let initial_chunk_count = (width as usize)
+            .div_ceil(CHUNK_EDGE as usize)
+            .checked_mul((height as usize).div_ceil(CHUNK_EDGE as usize))
+            .ok_or(WorldError::WorldCapacityExceeded)?;
+        if initial_chunk_count > INITIAL_MAX_CHUNKS {
+            return Err(WorldError::WorldCapacityExceeded);
+        }
         registry
             .try_freeze()
             .map_err(|_| WorldError::InvalidMaterialRegistry)?;
@@ -414,10 +425,6 @@ impl World {
         let entity_allocator =
             EntityAllocator::new(WORLD_ENTITY_ID_CAPACITY).map_err(map_entity_id_error)?;
         let mut sleeping_chunks = HashSet::new();
-        let initial_chunk_count = (width as usize)
-            .div_ceil(CHUNK_EDGE as usize)
-            .checked_mul((height as usize).div_ceil(CHUNK_EDGE as usize))
-            .ok_or(WorldError::WorldCapacityExceeded)?;
         sleeping_chunks
             .try_reserve(
                 initial_chunk_count
@@ -541,6 +548,22 @@ impl World {
         active_remote.extend(active_coordinates.iter().copied().filter(|coord| {
             !self.cells.is_initial_chunk(*coord) && !self.sleeping_chunks.contains(coord)
         }));
+        let mut remote_structural_origins = Vec::new();
+        remote_structural_origins
+            .try_reserve_exact(active_remote.len())
+            .map_err(|_| WorldError::AllocationFailed)?;
+        for coordinate in active_remote.iter().copied() {
+            remote_structural_origins.push((
+                coordinate
+                    .x
+                    .checked_mul(CHUNK_EDGE)
+                    .ok_or(WorldError::InvalidWorldDimensions)?,
+                coordinate
+                    .y
+                    .checked_mul(CHUNK_EDGE)
+                    .ok_or(WorldError::InvalidWorldDimensions)?,
+            ));
+        }
         let remote_count = active_remote
             .len()
             .checked_mul(CHUNK_AREA)
@@ -580,7 +603,7 @@ impl World {
 
         // 1. 体積不足の 4x4 半ブロックおよび孤立浮遊ピクセルの崩落判定
         self.check_structural_collapse();
-        self.check_remote_structural_collapse();
+        self.check_remote_structural_collapse(&remote_structural_origins);
 
         // 2. 下から上への物理シミュレーション走査
         let ascending = self.tick_count.is_multiple_of(2);
@@ -734,6 +757,12 @@ impl World {
         } else {
             self.active_remote_chunks.contains(&coordinate)
         }
+    }
+
+    /// 指定world座標の所属chunkがresidentかつactiveであることを返します。
+    /// Playerなどchunkに所属するentityは、所属先がdomain外へ移った後に状態を進めないために使います。
+    pub fn is_world_cell_active(&self, x: i32, y: i32) -> bool {
+        self.world_cell_active(x, y)
     }
 
     #[cfg(test)]
@@ -1533,15 +1562,8 @@ impl World {
         }
     }
 
-    fn check_remote_structural_collapse(&mut self) {
-        let mut origins = self
-            .active_remote_chunks
-            .iter()
-            .filter(|coordinate| !self.sleeping_chunks.contains(coordinate))
-            .map(|coord| (coord.x * CHUNK_EDGE, coord.y * CHUNK_EDGE))
-            .collect::<Vec<_>>();
-        origins.sort_unstable();
-        for (origin_x, origin_y) in origins {
+    fn check_remote_structural_collapse(&mut self, origins: &[(i32, i32)]) {
+        for &(origin_x, origin_y) in origins {
             for local_y in (0..CHUNK_EDGE).step_by(4) {
                 for local_x in (0..CHUNK_EDGE).step_by(4) {
                     let mut indices = [(0_i32, 0_i32); 16];
@@ -1855,10 +1877,11 @@ impl World {
             .checked_add(
                 self.cells
                     .len()
-                    .checked_mul(4)
+                    .checked_mul(8)
                     .ok_or(SnapshotError::CapacityExceeded)?,
             )
             .and_then(|size| size.checked_add(remote_count.checked_mul(CHUNK_AREA * 8 + 8)?))
+            .and_then(|size| size.checked_add(self.active_remote_chunks.len().checked_mul(8)?))
             .and_then(|size| {
                 size.checked_add(
                     self.active_initial_chunks
@@ -1875,6 +1898,34 @@ impl World {
             .ok_or(SnapshotError::CapacityExceeded)?;
         out.try_reserve(reserve)
             .map_err(|_| SnapshotError::AllocationFailed)?;
+        // HashMap/HashSetの走査順を保存形式へ流さず、正規順用の一時配列も失敗可能に確保します。
+        // 通常のcollectは割当失敗をResultへ変換できず、save APIの契約を崩すため使いません。
+        let mut remote = Vec::new();
+        remote
+            .try_reserve_exact(remote_count)
+            .map_err(|_| SnapshotError::AllocationFailed)?;
+        remote.extend(self.cells.remote_chunks());
+        remote.sort_unstable_by_key(|(coord, _)| *coord);
+        let mut active = Vec::new();
+        active
+            .try_reserve_exact(self.active_remote_chunks.len())
+            .map_err(|_| SnapshotError::AllocationFailed)?;
+        active.extend(self.active_remote_chunks.iter().copied());
+        active.sort_unstable();
+        let mut active_initial = Vec::new();
+        active_initial
+            .try_reserve_exact(self.active_initial_chunks.as_ref().map_or(0, HashSet::len))
+            .map_err(|_| SnapshotError::AllocationFailed)?;
+        if let Some(set) = &self.active_initial_chunks {
+            active_initial.extend(set.iter().copied());
+        }
+        active_initial.sort_unstable();
+        let mut leases = Vec::new();
+        leases
+            .try_reserve_exact(self.chunk_leases.len())
+            .map_err(|_| SnapshotError::AllocationFailed)?;
+        leases.extend(self.chunk_leases.values().copied());
+        leases.sort_unstable_by_key(|lease| lease.id);
         out.extend_from_slice(SNAPSHOT_MAGIC);
         push_u16(&mut out, SNAPSHOT_VERSION);
         push_u32(&mut out, SIMULATION_VERSION);
@@ -1919,8 +1970,6 @@ impl World {
             push_u64(&mut out, command.sequence);
             push_world_command(&mut out, command.payload);
         }
-        let mut remote = self.cells.remote_chunks().collect::<Vec<_>>();
-        remote.sort_unstable_by_key(|(coord, _)| *coord);
         push_u16(
             &mut out,
             u16::try_from(remote.len()).map_err(|_| SnapshotError::CapacityExceeded)?,
@@ -1941,8 +1990,6 @@ impl World {
                 }
             }
         }
-        let mut active: Vec<_> = self.active_remote_chunks.iter().copied().collect();
-        active.sort_unstable();
         push_u16(
             &mut out,
             u16::try_from(active.len()).map_err(|_| SnapshotError::CapacityExceeded)?,
@@ -1952,12 +1999,6 @@ impl World {
             push_i32(&mut out, coord.y);
         }
         out.push(u8::from(self.active_initial_chunks.is_some()));
-        let mut active_initial = self
-            .active_initial_chunks
-            .as_ref()
-            .map(|set| set.iter().copied().collect::<Vec<_>>())
-            .unwrap_or_default();
-        active_initial.sort_unstable();
         push_u16(
             &mut out,
             u16::try_from(active_initial.len()).map_err(|_| SnapshotError::CapacityExceeded)?,
@@ -1967,8 +2008,6 @@ impl World {
             push_i32(&mut out, coord.y);
         }
         push_u64(&mut out, self.next_chunk_lease_id);
-        let mut leases: Vec<_> = self.chunk_leases.values().copied().collect();
-        leases.sort_unstable_by_key(|lease| lease.id);
         push_u16(
             &mut out,
             u16::try_from(leases.len()).map_err(|_| SnapshotError::CapacityExceeded)?,
@@ -2424,7 +2463,8 @@ impl World {
                 let bx = gx * 4;
                 let by = gy * 4;
 
-                let mut solid_indices = Vec::with_capacity(16);
+                let mut solid_indices = [(0_usize, 0_usize); 16];
+                let mut solid_count = 0;
 
                 for py in 0..4 {
                     for px in 0..4 {
@@ -2439,19 +2479,21 @@ impl World {
                             && behavior == Behavior::Solid
                             && !cell.is_falling()
                         {
-                            solid_indices.push(idx);
+                            solid_indices[solid_count] = (x as usize, y as usize);
+                            solid_count += 1;
                         }
                     }
                 }
 
-                let total_solid = solid_indices.len();
+                let total_solid = solid_count;
 
                 // 4x4 半ブロック（16セル）中、固体が 1〜7 個しかない場合（体積が半分未満に破壊された）
                 // 構造を保てなくなり、自由落下状態（FLAG_FALLING）に変化して重力で崩落する
                 if total_solid > 0 && total_solid < 8 {
-                    for idx in solid_indices {
-                        let x = (idx % width as usize) as i32;
-                        let y = (idx / width as usize) as i32;
+                    for (x, y) in solid_indices.into_iter().take(solid_count) {
+                        let x = x as i32;
+                        let y = y as i32;
+                        let idx = y as usize * width as usize + x as usize;
                         self.cells[idx].set_falling(true);
                         self.wake_chunk_neighborhood(ChunkCoord::from_cell(x, y));
                     }
