@@ -133,6 +133,7 @@ pub struct AppBuilder {
     assets: Option<crate::assets::AssetServer>,
     settings: EngineSettings,
     worlds: Vec<(StableKey, StateStore)>,
+    terrains: Vec<(StableKey, crate::world::WorldBuilder)>,
     services: ServiceRegistry,
     systems: Vec<SystemEntry>,
 }
@@ -164,6 +165,31 @@ impl AppBuilder {
             .try_reserve(1)
             .map_err(crate::foundation::error::allocation)?;
         self.worlds.push((key, state));
+        Ok(())
+    }
+    /// 新設計のsandbox Worldを登録します。地形と作者状態はRuntimeが候補として所有します。
+    pub fn sandbox_world(
+        &mut self,
+        key: StableKey,
+        builder: crate::world::WorldBuilder,
+    ) -> EngineResult<()> {
+        if self.worlds.iter().any(|(old, _)| *old == key) {
+            return Err(error(ErrorCode::DuplicateKey, "World登録"));
+        }
+        self.terrains
+            .try_reserve(1)
+            .map_err(crate::foundation::error::allocation)?;
+        let state = StateStore::new(
+            key,
+            crate::foundation::schema::SchemaRegistry::default(),
+            crate::foundation::state::StoreLimits {
+                records: 1,
+                payload_bytes: 0,
+                checkpoint_bytes: 1024,
+            },
+        )?;
+        self.world(key, state)?;
+        self.terrains.push((key, builder));
         Ok(())
     }
     /// 排他的slotへ実装を登録します。後勝ちによる置換は認めません。
@@ -312,6 +338,15 @@ impl EngineBuilder {
             Ok(()) => {}
             Err(error) => self.failure = Some(error),
         };
+        self
+    }
+    /// シーンから独立した汎用sandbox Worldを型付きbuilderで登録します。
+    pub fn sandbox_world(mut self, key: &str, builder: crate::world::WorldBuilder) -> Self {
+        if let Err(error) =
+            StableKey::resolve("game", key).and_then(|key| self.app.sandbox_world(key, builder))
+        {
+            self.failure = Some(error);
+        }
         self
     }
     /// pluginを作らず作者Systemを登録する入口です。
@@ -581,7 +616,7 @@ impl EngineBuilder {
             }
         }
         self.app.worlds.sort_by_key(|(key, _)| *key);
-        let worlds = match WorldSet::new(self.app.worlds) {
+        let worlds = match WorldSet::new(self.app.worlds, self.app.terrains) {
             Ok(worlds) => worlds,
             Err(error) => {
                 for plugin in ordered.iter().rev() {
@@ -650,12 +685,23 @@ struct WorldEntry {
     state: StateStore,
     tick: u64,
     paused: bool,
+    terrain: Option<crate::world::World>,
+}
+impl WorldEntry {
+    fn record_state(&self) -> &StateStore {
+        self.terrain
+            .as_ref()
+            .map_or(&self.state, |terrain| &terrain.state)
+    }
 }
 pub(crate) struct WorldSet {
     entries: Vec<WorldEntry>,
 }
 impl WorldSet {
-    fn new(worlds: Vec<(StableKey, StateStore)>) -> EngineResult<Self> {
+    fn new(
+        worlds: Vec<(StableKey, StateStore)>,
+        mut terrains: Vec<(StableKey, crate::world::WorldBuilder)>,
+    ) -> EngineResult<Self> {
         let mut ids: Arena<u8, WorldKind> = Arena::new(
             u32::try_from(worlds.len().max(1))
                 .map_err(|_| error(ErrorCode::CapacityExceeded, "World数"))?,
@@ -665,12 +711,20 @@ impl WorldSet {
             .try_reserve_exact(worlds.len())
             .map_err(crate::foundation::error::allocation)?;
         for (key, state) in worlds {
+            let id = ids.insert(0)?;
+            let terrain = if let Some(index) = terrains.iter().position(|(name, _)| *name == key) {
+                Some(terrains.remove(index).1.build(id)?)
+            } else {
+                None
+            };
+            let tick = terrain.as_ref().map_or(0, |world| world.tick());
             entries.push(WorldEntry {
-                id: ids.insert(0)?,
+                id,
                 key,
                 state,
-                tick: 0,
+                tick,
                 paused: false,
+                terrain,
             });
         }
         Ok(Self { entries })
@@ -687,6 +741,11 @@ impl WorldSet {
                 state: entry.state.try_copy()?,
                 tick: entry.tick,
                 paused: entry.paused,
+                terrain: entry
+                    .terrain
+                    .as_ref()
+                    .map(CandidateState::try_copy)
+                    .transpose()?,
             });
         }
         Ok(Self { entries })
@@ -710,7 +769,7 @@ pub struct WorldView<'a> {
     pub(crate) worlds: &'a WorldSet,
     pub(crate) access: Option<&'a SystemDescriptor>,
 }
-impl WorldView<'_> {
+impl<'a> WorldView<'a> {
     /// 安定キーをWorldIdへ解決します。
     pub fn id(&self, key: &str) -> EngineResult<WorldId> {
         let key = StableKey::resolve("game", key)?;
@@ -724,7 +783,17 @@ impl WorldView<'_> {
     /// 最後のbarrierで確定した作者recordを読みます。
     pub fn get<T: StateCodec + 'static>(&self, world: WorldId, key: StableKey) -> EngineResult<T> {
         check_access(self.access, key, false)?;
-        self.worlds.get(world)?.state.get(key)
+        self.worlds.get(world)?.record_state().get(key)
+    }
+    /// 最後のbarrierで公開された地形を借ります。Systemはengine:terrainの読取宣言が必要です。
+    pub fn terrain(&self, world: WorldId) -> EngineResult<&'a crate::world::World> {
+        check_access(self.access, StableKey::parse("engine:terrain")?, false)?;
+        self.worlds.get(world)?.terrain.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::UnsupportedCapability,
+                "sandbox地形を持たないWorld",
+            )
+        })
     }
     /// World独自のtick。停止したWorldでは増えません。
     pub fn tick(&self, world: WorldId) -> EngineResult<u64> {
@@ -738,7 +807,16 @@ impl WorldView<'_> {
                 "Systemは全recordの読取権限を持たない",
             ));
         }
-        self.worlds.get(world)?.state.checkpoint()
+        let entry = self.worlds.get(world)?;
+        if let Some(terrain) = &entry.terrain {
+            terrain.checkpoint(terrain.checkpoint_limit()?)
+        } else {
+            entry.state.checkpoint()
+        }
+    }
+    /// Runtimeが止めているWorldか。Sceneのpauseやinactive chunkとは独立しています。
+    pub fn paused(&self, world: WorldId) -> EngineResult<bool> {
+        Ok(self.worlds.get(world)?.paused)
     }
 }
 
@@ -766,12 +844,40 @@ impl WorldAccess<'_> {
     ) -> EngineResult<()> {
         let result = (|| {
             check_access(self.access, key, true)?;
-            let payload = self.worlds.get(world)?.state.encode_value(schema, value)?;
+            let payload = self
+                .worlds
+                .get(world)?
+                .record_state()
+                .encode_value(schema, value)?;
             self.commands.push(Command::Put {
                 world,
                 key,
                 schema,
                 payload,
+            })
+        })();
+        self.commands.remember(result)
+    }
+    /// 短命な編集callbackをbarrierへ提出します。callback自体は保存せず、確定結果を保存します。
+    /// 返却時にはviewはまだ変わりません。失敗したcallbackを含む候補tickは公開しません。
+    /// 登録中のWorld時計はRuntimeが所有します。callbackによる時計の変更は拒否し、
+    /// pause中でも地形とRuntimeの時計が一致するよう取引全体を公開しません。
+    pub fn edit_terrain(
+        &mut self,
+        world: WorldId,
+        callback: impl FnOnce(&mut crate::world::WorldEdit<'_>) -> EngineResult<()> + 'static,
+    ) -> EngineResult<()> {
+        let result = (|| {
+            check_access(self.access, StableKey::parse("engine:terrain")?, true)?;
+            if self.worlds.get(world)?.terrain.is_none() {
+                return Err(error(
+                    ErrorCode::UnsupportedCapability,
+                    "sandbox地形を持たないWorld",
+                ));
+            }
+            self.commands.push(Command::Terrain {
+                world,
+                callback: Box::new(move |terrain| terrain.edit(callback)),
             })
         })();
         self.commands.remember(result)
@@ -805,8 +911,13 @@ fn check_access(
 
 // 固定長キーをinlineで保持します。小さいPauseのために各Putへ追加の失敗不能なBox確保を
 // 導入せず、queue全体のtry_reserveで容量と確保失敗を検査できることを優先します。
+type TerrainCallback = Box<dyn FnOnce(&mut crate::world::World) -> EngineResult<()>>;
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    Terrain {
+        world: WorldId,
+        callback: TerrainCallback,
+    },
     Put {
         world: WorldId,
         key: StableKey,
@@ -860,16 +971,43 @@ impl CommandBuffer {
         }
         for command in self.commands.drain(..) {
             match command {
+                Command::Terrain { world, callback } => {
+                    let entry = worlds.get_mut(world)?;
+                    let expected_tick = entry.tick;
+                    let terrain = entry.terrain.as_mut().ok_or_else(|| {
+                        error(
+                            ErrorCode::UnsupportedCapability,
+                            "sandbox地形を持たないWorld",
+                        )
+                    })?;
+                    if terrain.tick() != expected_tick {
+                        return Err(error(
+                            ErrorCode::InvalidState,
+                            "地形とRuntimeの時計が不一致",
+                        ));
+                    }
+                    callback(terrain)?;
+                    if terrain.tick() != expected_tick {
+                        return Err(error(
+                            ErrorCode::InvalidState,
+                            "Runtime編集中の地形時計変更",
+                        ));
+                    }
+                }
                 Command::Put {
                     world,
                     key,
                     schema,
                     payload,
                 } => {
-                    let state = &mut worlds.get_mut(world)?.state;
-                    let mut transaction = state.transaction()?;
-                    transaction.put_encoded(key, schema, payload)?;
-                    transaction.commit()?;
+                    let entry = worlds.get_mut(world)?;
+                    if let Some(terrain) = &mut entry.terrain {
+                        terrain.edit(|edit| edit.put_state_encoded(key, schema, payload))?;
+                    } else {
+                        let mut transaction = entry.state.transaction()?;
+                        transaction.put_encoded(key, schema, payload)?;
+                        transaction.commit()?;
+                    }
                 }
                 Command::Pause { world, paused } => worlds.get_mut(world)?.paused = paused,
             }
@@ -1243,13 +1381,29 @@ impl Engine {
             }
             pending.commands.flush(&mut pending.worlds)?;
             for world in &mut pending.worlds.entries {
+                if world
+                    .terrain
+                    .as_ref()
+                    .is_some_and(|terrain| terrain.tick() != world.tick)
+                {
+                    return Err(error(
+                        ErrorCode::InvalidState,
+                        "確定前の地形とRuntimeの時計が不一致",
+                    ));
+                }
                 if !world.paused {
+                    if let Some(terrain) = &mut world.terrain {
+                        terrain.edit(|edit| edit.advance_tick())?;
+                    }
                     world.tick = world
                         .tick
                         .checked_add(1)
                         .ok_or_else(|| error(ErrorCode::CapacityExceeded, "World tick"))?;
                 }
                 world.state.validate()?;
+                if let Some(terrain) = &world.terrain {
+                    terrain.validate()?;
+                }
             }
             Ok(true)
         })();

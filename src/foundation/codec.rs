@@ -202,6 +202,27 @@ pub trait StateCodec: Sized {
     fn decode(decoder: &mut Decoder<'_>) -> EngineResult<Self>;
 }
 
+/// 任意recordは0/1のpresenceとpayloadで表します。未定義のpresenceをNoneへ丸めません。
+/// payloadの長さ・値域はTのcodecが検査し、外側のDecoderが全体byte上限を守ります。
+impl<T: StateCodec> StateCodec for Option<T> {
+    fn encode(&self, encoder: &mut Encoder) -> EngineResult<()> {
+        match self {
+            None => encoder.u8(0),
+            Some(value) => {
+                encoder.u8(1)?;
+                value.encode(encoder)
+            }
+        }
+    }
+    fn decode(decoder: &mut Decoder<'_>) -> EngineResult<Self> {
+        match decoder.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(T::decode(decoder)?)),
+            _ => Err(invalid()),
+        }
+    }
+}
+
 macro_rules! integer_codec {
     ($($ty:ty => $method:ident),* $(,)?) => {$ (
         impl StateCodec for $ty {

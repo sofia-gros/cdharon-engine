@@ -42,6 +42,7 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [25_OPEN_EXTENSION_AND_COLLISION_CONTRACTS.md](25_OPEN_EXTENSION_AND_COLLISION_CONTRACTS.md) | P001：標準処理の置換、独自データ、衝突、同tick順序と保存への接続 |
 | [26_FULL_CLONE_ACCEPTANCE.md](26_FULL_CLONE_ACCEPTANCE.md) | Terraria・Noitaの全内容・全挙動を再現する能力の照合と出荷判定 |
 | [28_ASSET_AND_BASIC_RENDERING.md](28_ASSET_AND_BASIC_RENDERING.md) | 実装したE03の資産、pack、scope、差し替え、sprite、camera、描画adapter |
+| [29_WORLD_AND_PERSISTENCE.md](29_WORLD_AND_PERSISTENCE.md) | 実装したE04の世界・生成・活動域・独自状態・退避・保存API |
 | [27_FULL_CLONE_DESIGN_REVIEW.md](27_FULL_CLONE_DESIGN_REVIEW.md) | 完全クローン基準のレビュー、18件の不足と修正、設計判断の根拠 |
 
 ## この文書群の位置付け
@@ -50,7 +51,7 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 
 エンジンの整合性・性能・保守性を優先し、その設計の上で人間に分かりやすいAPIを提供します。性能や正しさのために必要な予約、batch、Job、所有権を明示し、理由と利用方法を説明します。表面上の簡単さのために設計を崩しません。
 
-01〜05は製品理解と利用例、06〜28は実装・検証の基準です。APIの正確な意味は16/25、共通データは08/23、標準更新順は07、標準solverの補足は22、完全再現の判定は26を参照します。P001により標準solverや次tick繰越を作者へ強制する解釈を撤回し、25の拡張契約を優先します。食い違いが見つかったら要件へ立ち戻って関係文書を同時に修正し、都合のよい説明だけを採用しません。
+01〜05は製品理解と利用例、06〜29は実装・検証の基準です。APIの正確な意味は16/25、共通データは08/23、標準更新順は07、標準solverの補足は22、完全再現の判定は26を参照します。P001により標準solverや次tick繰越を作者へ強制する解釈を撤回し、25の拡張契約を優先します。食い違いが見つかったら要件へ立ち戻って関係文書を同時に修正し、都合のよい説明だけを採用しません。
 
 ## 開発の基準
 
@@ -76,3 +77,5 @@ TerrariaとNoitaは完全クローンの制作可能性を判定する対象で�
 - [E03：資産と基本表示](evidence/E03/README.md)
 
 実装済みの範囲と検証は各記録を参照してください。v1の設計・完全クローンの要件は、これらの基盤工程だけで達成したと扱いません。
+
+- [E04：世界と保存基盤](evidence/E04/README.md)

@@ -4,7 +4,7 @@ Rust製の、汎用2Dサンドボックスゲームエンジンです。
 
 Fabric APIのような機能へのアクセスと拡張性、Phaserのようなシーン・入力・資産・実行管理を、2Dサンドボックスのシミュレーションと統合します。クリエーターがRustでゲームのルール、素材、キャラクター、操作、進行を定義し、エンジンが制作と実行の基盤を提供します。
 
-**現在はv1.0.0へ向けて開発中です。** E03「資産と基本表示」までの新基盤を実装・検証しています。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
+**現在はv1.0.0へ向けて開発中です。** E04「世界と保存基盤」までの新基盤を実装・検証しています。商用v1.0.0の完成や、Terraria・Noitaの完全クローン制作能力を実証済みという意味ではありません。
 
 ## 目指すもの
 
@@ -22,10 +22,13 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E01：Coreとデータ | 型付きID、schema、component、独自状態、格子channel、codec、乱数、取引 | [実装・検証記録](new_docs/evidence/E01/README.md) |
 | E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
+| E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
 
-E03のコードは全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
+E03の初回実装は全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
 
-次の工程はE04「世界と保存基盤」です。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
+E2・E3とE4のPR指摘対応を取り込んだE04は、旧変更を含まないツリーの全224件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
+
+E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
 ## 動かす
 
@@ -51,6 +54,7 @@ cargo +1.98.1 run --locked --example assets_scene -- --window
 ```sh
 cargo +1.98.1 run --locked --example foundation_data
 cargo +1.98.1 run --locked --example runtime_scenes
+cargo +1.98.1 run --locked --example sandbox_world
 ```
 
 | 作例 | 内容 |
@@ -58,6 +62,7 @@ cargo +1.98.1 run --locked --example runtime_scenes
 | [foundation_data.rs](examples/foundation_data.rs) | 作者の状態・component・格子データの保存と取引 |
 | [runtime_scenes.rs](examples/runtime_scenes.rs) | headlessで入力を注入し、Scene遷移と終了を実行 |
 | [assets_scene.rs](examples/assets_scene.rs) | 共通packのimport、スプライト、複数カメラ、headless/GPU表示 |
+| [sandbox_world.rs](examples/sandbox_world.rs) | 約43億cellの論理世界を部分生成し、家具・部分液量・遠隔lease・退避区域を保存復帰 |
 
 ## ゲームの作り方
 
@@ -84,7 +89,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo doc --lib --no-deps --locked
 ```
 
-[全体Rust CI](.github/workflows/rust.yml)と[3 OSの資産・描画CI](.github/workflows/e03-assets.yml)を継続実行します。公開APIや保存形式の変更には、設計・利用例・テスト・互換性への影響を記録してください。
+[全体Rust CI](.github/workflows/rust.yml)と[3 OSの資産・描画CI](.github/workflows/e03-assets.yml)、[3 OSの世界・保存CI](.github/workflows/e04-world.yml)を継続実行します。公開APIや保存形式の変更には、設計・利用例・テスト・互換性への影響を記録してください。
 
 ## ライセンス
 
@@ -93,3 +98,7 @@ cargo doc --lib --no-deps --locked
 PR #1のRuntime指摘も反映し、非活動Systemのphase境界、World横断recordの競合検出、plugin設定拒否時の解放対象を修正しています。根拠は[E02の記録](new_docs/evidence/E02/README.md)を参照してください。
 
 PR #2のポインター指摘に対応し、HiDPI・resize後も論理frame座標を使用します。余白やwindow外へ出たpointerは無効化し、他の入力状態は維持します。詳細は[E03の記録](new_docs/evidence/E03/README.md)を参照してください。
+
+E4のPRレビューで、次tickの生成採用・保存世代の列挙容量・blockの形状変更remapを修正し、回帰検査を追加しています。
+
+E4の再レビューでは、一時保存世代の回収とRuntimeの地形時計の所有権も修正しました。保存中断・再起動と、pause中を含む時計不一致の回帰検査を追加しています。
