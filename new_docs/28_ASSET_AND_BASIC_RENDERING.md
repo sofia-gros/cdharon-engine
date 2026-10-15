@@ -132,3 +132,11 @@ spriteは位置、表示寸法、anchor、回転、反転、tint/alpha、frame�
 `RenderAdapter`はsnapshotとRGBA targetを受ける。`EngineBuilder::render_adapter`で標準処理を置換でき、`Engine::render_frame`で独自hostや描画経路へ抽出できる。標準`ScalarRenderer`は正しさを確認する参照経路として、nearest、premultiplied linear補間、linear色でのalpha合成、矩形clip、回転を実装する。sample仕事量の上限を先に検査し、途中の表示を成功扱いにしない。
 
 標準OS hostはCPU側の結果をpixels/wgpuへuploadしてsurfaceへ表示する。GPU処理の結果をWorldへ逆読取しない。実際のadapterは`DesktopGpu` serviceで確認できる。spriteのGPU instancing、render graph、照明等の最適化と完成した表現は担当工程へ接続する。E03の参照経路を、10,000sprite等の性能認定の代わりにはしない。
+
+## PR #2の入力修正
+
+Native hostはOSの物理surface座標を`SurfaceMapping`で論理RenderFrame座標へ変換してから、tick入力へ提出します。cameraのWorld座標への変換は作者がそのcameraで行います。
+
+HiDPI、resize、整数倍率の中央clip、letterboxを描画と同じ設定で扱います。静止中のpointerもresizeと倍率変更で再投影します。余白・window外・最小化中は`InputValue::PointerUnavailable`を届け、Sceneの`pointer`照会はNoneになります。古い有効座標を残さず、同時に押しているkeyboard/buttonを全resetしません。focus loss時は既存の機器resetを使います。
+
+入力codecにはPointerUnavailableのtag 3を追加しました。既存tag 0/1/2の意味は変更せず、旧readerは未知tagを拒否します。v1.0互換凍結前の変更であり、新しい入力を含むreplayの読込には今回のreaderが必要です。

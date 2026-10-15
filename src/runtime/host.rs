@@ -27,7 +27,30 @@ struct Host {
     started: Instant,
     initial_tick: u64,
     sequence: u64,
+    // OSの物理座標を保持し、resize/HiDPI変更時にも静止中のpointerを再投影します。
+    cursor: Option<[f64; 2]>,
     failure: Option<EngineError>,
+}
+
+// 描画と同じ論理frame/物理surfaceの変換を使います。無効化はNaNや座標0で表さず、
+// 専用の正規入力としてtickへ届けるため、再生時も余白への退出を再現できます。
+fn surface_pointer_value(
+    logical: [u32; 2],
+    surface: [u32; 2],
+    integer: bool,
+    cursor: Option<[f64; 2]>,
+) -> EngineResult<InputValue> {
+    let Some(cursor) = cursor else {
+        return Ok(InputValue::PointerUnavailable);
+    };
+    if surface.contains(&0) {
+        return Ok(InputValue::PointerUnavailable);
+    }
+    let mapping = crate::presentation::SurfaceMapping::fit(logical, surface, integer)?;
+    Ok(match mapping.to_logical(cursor)? {
+        Some([x, y]) => InputValue::Pointer { x, y },
+        None => InputValue::PointerUnavailable,
+    })
 }
 
 /// 表示adapterがsurfaceを接続するためのOS側handleです。正規Worldへ保存しません。
@@ -50,6 +73,21 @@ impl DesktopWindow {
     }
 }
 impl Host {
+    fn refresh_pointer(&mut self) -> EngineResult<()> {
+        let surface = self.window.as_ref().map_or([0, 0], |window| {
+            let size = window.inner_size();
+            [size.width, size.height]
+        });
+        let frame = self.engine.render_frame();
+        let value = surface_pointer_value(
+            [frame.width, frame.height],
+            surface,
+            self.engine.settings().render.scaling == "integer",
+            self.cursor,
+        )?;
+        self.input(InputBinding::Pointer(0), value);
+        Ok(())
+    }
     fn input(&mut self, binding: InputBinding, value: InputValue) {
         let Some(sequence) = self.sequence.checked_add(1) else {
             self.failure = Some(error(ErrorCode::CapacityExceeded, "OS入力sequence"));
@@ -198,6 +236,7 @@ impl ApplicationHandler for Host {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Focused(false) => {
+                self.cursor = None;
                 if let Err(error) = self
                     .input_tick()
                     .and_then(|tick| self.engine.queue_reset_at(tick))
@@ -244,8 +283,10 @@ impl ApplicationHandler for Host {
                     InputValue::Button(state == ElementState::Pressed),
                 );
             }
-            WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
-                if let Some(pixels) = &mut self.pixels
+            WindowEvent::Resized(size) => {
+                if size.width > 0
+                    && size.height > 0
+                    && let Some(pixels) = &mut self.pixels
                     && let Err(cause) = pixels.resize_surface(size.width, size.height)
                 {
                     self.stop(
@@ -253,14 +294,27 @@ impl ApplicationHandler for Host {
                         error(ErrorCode::DeviceLost, "surface resize").detail(cause.to_string()),
                     );
                 }
+                if let Err(error) = self.refresh_pointer() {
+                    self.stop(event_loop, error);
+                }
             }
-            WindowEvent::CursorMoved { position, .. } => self.input(
-                InputBinding::Pointer(0),
-                InputValue::Pointer {
-                    x: position.x,
-                    y: position.y,
-                },
-            ),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Err(error) = self.refresh_pointer() {
+                    self.stop(event_loop, error);
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = Some([position.x, position.y]);
+                if let Err(error) = self.refresh_pointer() {
+                    self.stop(event_loop, error);
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                if let Err(error) = self.refresh_pointer() {
+                    self.stop(event_loop, error);
+                }
+            }
             WindowEvent::RedrawRequested => {
                 if self.window.as_ref().is_some_and(|window| {
                     let size = window.inner_size();
@@ -350,6 +404,7 @@ impl Engine {
             started: now,
             initial_tick,
             sequence: 0,
+            cursor: None,
             failure: None,
         };
         let result = event_loop
@@ -361,5 +416,56 @@ impl Engine {
             return Err(error);
         }
         cleanup
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_mapping_tracks_hidpi_resize_letterbox_and_integer_clipping() {
+        // 同じ論理位置は、通常・HiDPI・縦横比の異なるsurfaceでも一致します。
+        for (surface, position) in [
+            ([400, 200], [100.0, 50.0]),
+            ([800, 400], [200.0, 100.0]),
+            ([800, 600], [200.0, 200.0]),
+        ] {
+            assert_eq!(
+                surface_pointer_value([200, 100], surface, false, Some(position)).unwrap(),
+                InputValue::Pointer { x: 50.0, y: 25.0 }
+            );
+        }
+        assert_eq!(
+            surface_pointer_value([200, 100], [800, 600], false, Some([10.0, 99.0])).unwrap(),
+            InputValue::PointerUnavailable
+        );
+        assert_eq!(
+            surface_pointer_value([200, 100], [800, 600], false, Some([800.0, 300.0])).unwrap(),
+            InputValue::PointerUnavailable
+        );
+        // 整数倍率で小さなwindowへ縮めた場合は中央clipの逆変換です。
+        assert_eq!(
+            surface_pointer_value([200, 100], [100, 50], true, Some([0.0, 0.0])).unwrap(),
+            InputValue::Pointer { x: 50.0, y: 25.0 }
+        );
+        assert_eq!(
+            surface_pointer_value([200, 100], [500, 400], true, Some([50.0, 100.0])).unwrap(),
+            InputValue::Pointer { x: 0.0, y: 0.0 }
+        );
+    }
+    #[test]
+    fn unavailable_pointer_never_reuses_a_previous_frame_position() {
+        assert_eq!(
+            surface_pointer_value([200, 100], [800, 600], false, None).unwrap(),
+            InputValue::PointerUnavailable
+        );
+        assert_eq!(
+            surface_pointer_value([200, 100], [0, 0], false, Some([10.0, 10.0])).unwrap(),
+            InputValue::PointerUnavailable
+        );
+        assert!(
+            surface_pointer_value([200, 100], [800, 600], false, Some([f64::NAN, 10.0])).is_err()
+        );
     }
 }
