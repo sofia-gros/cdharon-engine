@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Start with [`new_docs/README.md`](new_docs/README.md). The user's explicit requirements and the documents under `new_docs/` are the product design authority.
-- The previous documentation, including the root `README.md`, `codex/`, and `gemini/`, is retired and retained only as historical files. Do not read it to guide development or import its requirements, restrictions, milestones, or completion claims. Consult it only when the user explicitly requests a historical comparison.
+- The previous documentation under `codex/` and `gemini/` is retired and retained only as historical files. Do not read it to guide development or import its requirements, restrictions, milestones, or completion claims. Consult it only when the user explicitly requests a historical comparison. The root `README.md` is the maintained GitHub-facing project introduction; it summarizes `new_docs/` and verified implementation without becoming a separate design authority.
 - Treat `src/`, `Cargo.toml`, and executed checks as evidence of current implementation, never as limits on the user's intended product.
 - Read only the new design pages relevant to the task. Distinguish user requirements, proposed designs, unresolved decisions, and verified implementation. Do not silently present a planned feature as implemented.
 - Charon Engine is an open-source, general-purpose 2D sandbox game engine. Creators own game rules, assets, entities, and progression. Specific games demonstrate the engine's capabilities and must not define mandatory gameplay in the engine core.
@@ -42,6 +42,8 @@ Run the narrowest relevant checks while iterating, then the full set when implem
 ## Documentation
 
 Keep product purpose, creator workflows, requirements, design decisions, and verified implementation records under `new_docs/`. Preserve retired documentation without treating it as an active specification. Use relative links that work on GitHub.
+
+Update the root `README.md` whenever implementation, public APIs, setup or usage, validation status, or milestone progress changes its contents. Keep the GitHub introduction, runnable commands, verified capabilities, remaining work, and links aligned with `new_docs/` in the same change. Distinguish implemented behavior from v1.0.0 goals and link completion claims to verification records; never copy retired milestone claims into the README.
 
 ## Language and code documentation
 
