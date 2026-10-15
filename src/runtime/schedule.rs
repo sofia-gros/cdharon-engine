@@ -222,12 +222,9 @@ pub(crate) fn plan(
         let current = &result[index].descriptor;
         for earlier in 0..index {
             let prior = &result[earlier].descriptor;
-            if prior.phase != current.phase
-                || ancestors[earlier]
-                || (prior.world.is_some()
-                    && current.world.is_some()
-                    && prior.world != current.world)
-            {
+            // worldは活動状態への所属であり、実際の読書先を限定しません。
+            // 別World所属でも同じrecordへ到達できるため、競合は宣言キーで検査します。
+            if prior.phase != current.phase || ancestors[earlier] {
                 continue;
             }
             let conflict = prior
