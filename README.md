@@ -23,6 +23,7 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E02：RuntimeとScene | 起動、plugin、Scene遷移、scope、入力、固定更新、System順序、時計、headless | [実装・検証記録](new_docs/evidence/E02/README.md) |
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
+| E05：セルと流体（実装中） | 物質状態の一括輸送、局所移動、圧力緩和、保存可能な押出し探索。工程全体は未完了 | [契約と残作業](new_docs/30_MATERIAL_TRANSPORT.md)・[検証記録](new_docs/evidence/E05/README.md) |
 
 E03の初回実装は全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
 

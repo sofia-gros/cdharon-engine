@@ -44,6 +44,7 @@ pub(crate) trait ChannelFactory: Send + Sync {
 }
 pub(crate) trait ChannelState: Send + Sync {
     fn key(&self) -> StableKey;
+    fn material_layer(&self) -> Option<StableKey>;
     fn as_any(&self) -> &dyn Any;
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn try_copy(&self) -> EngineResult<Box<dyn ChannelState>>;
@@ -53,22 +54,26 @@ pub(crate) trait ChannelState: Send + Sync {
     fn extract(&self, region: ChunkRegion) -> EngineResult<Vec<u8>>;
     fn clear(&mut self, region: ChunkRegion) -> EngineResult<()>;
     fn merge(&mut self, bytes: &[u8]) -> EngineResult<()>;
+    fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()>;
 }
-struct Factory<T: GridValue + Send + Sync + 'static>(ChannelDefinition<T>);
+struct Factory<T: GridValue + Send + Sync + 'static>(ChannelDefinition<T>, Option<StableKey>);
 struct Storage<T: GridValue + Send + Sync + 'static> {
     definition: Arc<Factory<T>>,
     grid: GridChannel<T>,
 }
 impl<T: GridValue + Send + Sync + 'static> Factory<T> {
     fn copy(&self) -> Self {
-        Self(ChannelDefinition {
-            key: self.0.key,
-            version: self.0.version,
-            value_schema: self.0.value_schema,
-            layout: self.0.layout,
-            default: self.0.default,
-            limits: self.0.limits,
-        })
+        Self(
+            ChannelDefinition {
+                key: self.0.key,
+                version: self.0.version,
+                value_schema: self.0.value_schema,
+                layout: self.0.layout,
+                default: self.0.default,
+                limits: self.0.limits,
+            },
+            self.1,
+        )
     }
     fn empty(&self) -> EngineResult<GridChannel<T>> {
         GridChannel::new(
@@ -106,6 +111,12 @@ impl<T: GridValue + Send + Sync + 'static> ChannelFactory for Factory<T> {
         self.0.default.encode(&mut out)?;
         out.u32(self.0.limits.chunks)?;
         out.u64(self.0.limits.checkpoint_bytes as u64)?;
+        // 位置に固定された既存channelのmanifestは維持します。物質追従を指定した
+        // 場合だけ識別子と所属layerを加え、所有権の変更をContent差分として検出します。
+        if let Some(layer) = self.1 {
+            out.raw(b"MATERIAL")?;
+            layer.encode(&mut out)?;
+        }
         Ok(out.finish())
     }
     fn create(&self) -> EngineResult<Box<dyn ChannelState>> {
@@ -188,6 +199,9 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
     fn key(&self) -> StableKey {
         self.definition.0.key
     }
+    fn material_layer(&self) -> Option<StableKey> {
+        self.definition.1
+    }
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -251,6 +265,39 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
         }
         Ok(())
     }
+    fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()> {
+        if self.definition.1 != Some(layer) {
+            return Ok(());
+        }
+        // 先に旧値を全て退避し、一旦既定値へ戻してから再配置します。これにより
+        // chunk上限ぴったりで別chunkへ移る場合も、不要な同時確保を要求しません。
+        // 途中で失敗すれば外側のWorld候補全体が破棄されます。
+        let origin = self.grid.layout().origin;
+        let mut values = Vec::new();
+        values.try_reserve_exact(path.len()).map_err(allocation)?;
+        for point in path {
+            let coordinate = CellPoint {
+                x: point
+                    .x
+                    .checked_sub(origin.x)
+                    .ok_or_else(|| invalid("物質channel水平座標"))?,
+                y: point
+                    .y
+                    .checked_sub(origin.y)
+                    .ok_or_else(|| invalid("物質channel垂直座標"))?,
+            };
+            values.push((coordinate, self.grid.get(coordinate)));
+        }
+        for (point, _) in &values {
+            self.grid.set(*point, self.definition.0.default)?;
+        }
+        // pathの末尾を先頭へ、残りは一つ先へ送る循環置換です。
+        for index in 0..values.len() {
+            let destination = (index + 1) % values.len();
+            self.grid.set(values[destination].0, values[index].1)?;
+        }
+        Ok(())
+    }
 }
 impl ContentRegistry {
     /// 状態・block個体・channel値に使う型schemaを登録します。
@@ -262,6 +309,38 @@ impl ContentRegistry {
         &mut self,
         definition: ChannelDefinition<T>,
     ) -> EngineResult<()> {
+        self.register_channel(definition, None)
+    }
+    /// 指定layerの物質と一緒に移るchannelを登録します。
+    ///
+    /// energy、timer、混合recordや作者の個体IDを格納するための所有権宣言です。
+    /// 地形の輸送取引は登録された全channelを移すため、呼出側の選択漏れで状態を
+    /// 置き去りにしません。圧力など位置へ属する場には通常の`channel`を使います。
+    /// この経路は1cell対1要素だけを扱います。別解像度の値の分配・合流は作者が
+    /// 通常channelと明示的な変換取引で定義し、暗黙に補間しません。
+    pub fn material_channel<T: GridValue + Send + Sync + 'static>(
+        &mut self,
+        layer: StableKey,
+        definition: ChannelDefinition<T>,
+    ) -> EngineResult<()> {
+        if !self.has_layer(layer) {
+            return Err(EngineError::new(
+                ErrorCode::MissingKey,
+                "物質channelのlayer",
+            ));
+        }
+        if definition.layout.x_scale.ratio() != (1, 1)
+            || definition.layout.y_scale.ratio() != (1, 1)
+        {
+            return Err(invalid("物質追従channelには1対1の格子が必要"));
+        }
+        self.register_channel(definition, Some(layer))
+    }
+    fn register_channel<T: GridValue + Send + Sync + 'static>(
+        &mut self,
+        definition: ChannelDefinition<T>,
+        material_layer: Option<StableKey>,
+    ) -> EngineResult<()> {
         if self.channels.len() >= self.limits.channels as usize {
             return Err(EngineError::capacity(
                 "channel定義数",
@@ -269,7 +348,7 @@ impl ContentRegistry {
                 self.limits.channels.into(),
             ));
         }
-        let factory = Factory(definition);
+        let factory = Factory(definition, material_layer);
         factory.validate_type(&self.schemas)?;
         factory.empty()?;
         let index = match self
@@ -305,6 +384,21 @@ pub struct ChannelBatch<'a, T> {
     pub coverage: Vec<ChunkCoverage>,
 }
 impl World {
+    /// 登録済みchannelの格子変換を返します。値型が一致しない要求は拒否します。
+    /// 読込状態や値は含まないため、値の取得時には引き続きcoverageを確認してください。
+    pub fn channel_layout<T: GridValue + Send + Sync + 'static>(
+        &self,
+        key: StableKey,
+    ) -> EngineResult<GridLayout> {
+        Ok(self.typed_channel::<T>(key)?.grid.layout())
+    }
+    /// channelが物質に追従する場合の所属layer。Noneは位置に固定された場です。
+    pub fn channel_material_layer<T: GridValue + Send + Sync + 'static>(
+        &self,
+        key: StableKey,
+    ) -> EngineResult<Option<StableKey>> {
+        Ok(self.typed_channel::<T>(key)?.definition.1)
+    }
     fn typed_channel<T: GridValue + Send + Sync + 'static>(
         &self,
         key: StableKey,
