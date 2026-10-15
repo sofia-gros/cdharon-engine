@@ -28,7 +28,7 @@ Active -> ResidentInactive -> Saving -> Evicted
 Preparing/Ready -> Failed または Cancelled
 ```
 
-RequestId、入力世代、要求source、対象World、region、purpose、確定希望tickを持つ。IOや生成workerはPreparingまでを担当する。Readyの候補はworld境界、content、依存、容量を検証してからWorldへcommitする。
+RequestId、入力世代、要求source、対象World、region、purpose、確定希望tickを持つ。IOや生成workerはPreparingまでを担当する。Readyの候補はworld境界、content、依存、容量を検証してからWorldへcommitする。 確定希望tickへ前進する前に、そのtickまでの全必須要求を検査する。遷移先tick期限の候補が全てReadyなら時計と区域を同じ取引で公開し、未準備なら時計も区域も公開しない。
 
 Activeだけが物理更新する。ResidentInactiveは状態を保持して凍結する。退避は保存または再生成可能な不変baseが確定してから行う。編集済みchunkを保存失敗のまま破棄しない。Entity、物質粒子、装置、AIは所属regionと一緒に退避する。
 

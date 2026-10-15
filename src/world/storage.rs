@@ -166,11 +166,12 @@ pub struct LoadedManifest {
     pub records: Vec<StoredRecord>,
 }
 impl<S: GenerationStorage> SaveRepository<S> {
-    /// 保存先と容量を指定します。keepを3未満にはできません。
+    /// 保存先と容量を指定します。keepは3以上、generationsはkeepより大きい値が必要です。
+    /// 新世代を検証してから古い世代を整理するため、列挙には最低1世代分の余裕を残します。
     pub fn new(storage: S, limits: SaveLimits, keep: usize) -> EngineResult<Self> {
         if keep < 3
             || limits.records == 0
-            || limits.generations < keep
+            || limits.generations <= keep
             || limits.manifest_bytes < 32
         {
             return Err(invalid("保存容量・保持世代数"));

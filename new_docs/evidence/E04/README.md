@@ -74,3 +74,15 @@ E04初回実装`0b1adf1`のCI結果：
 - [PR #1修正のRust CI](https://github.com/sofia-gros/charon-engine/actions/runs/38754310939)：成功。
 
 未実行・実行中のCIを成功へ数えず、ソースrevisionと結果の対応を保ちます。PRコメントへの投稿やPRのmergeは行っていません。
+
+## PR #3のレビュー指摘対応（2026-10-16）
+
+E02のPR #1は`eed1973`、E03のPR #2は`fb48f64`でmainへマージ済みです。E04のPR #3は`c87aaab`を対象とした外部レビューを待ち、以下の3件に対応しました。
+
+| 指摘 | 修正・回帰検査 |
+| --- | --- |
+| [4284739973](https://github.com/sofia-gros/charon-engine/pull/3#discussion_r4284739973)：次tick期限の生成を欠いたまま時計が前進する | 遷移先tickまでの要求を先に検査。次tick期限が全てReadyなら時計と全regionを一括公開し、一部未準備ならsnapshotを変更しない。保存したReadyの再開、未来の先取り拒否、取消済み要求も検査 |
+| [4284739981](https://github.com/sofia-gros/charon-engine/pull/3#discussion_r4284739981)：列挙上限と保持数が等しいと保存が停止する | `generations <= keep`を起動時に拒否。keep 3・列挙上限4という最小の有効設定で9回保存し、整理エラーなしで3世代を維持 |
+| [4284739985](https://github.com/sofia-gros/charon-engine/pull/3#discussion_r4284739985)：同寸法の形状変更remapが通る | 寸法に加え形状定義を登録時に照合。未配置・resident・退避中、Platform/Full/同じ占有maskで異なる定義を検査し、失敗時のepochとsnapshotを保持。休止個体も変換列の最終形状を検査 |
+
+Worldテストは45件、全体は219件です。全target check、整形、警告拒否Clippy、Rustdocが成功しました。新規依存と保存codecの変更はありません。未来tickの採用条件、保存設定、標準remapの制約を公開API資料へ反映しました。

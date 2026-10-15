@@ -38,7 +38,7 @@ registry.register(stone)?;
 
 `GenerationPass`はkey、version、依存pass、configuration、`generate`を定義します。Pipelineは依存を解決し、同順位を安定キーで固定します。入力はseed、絶対chunk座標、境界、不変Contentです。`anchor_seed`で絶対位置の候補を決め、対象chunkへclipします。共有乱数の消費順に構造物を依存させません。
 
-`GenerationTask`はWorldの可変参照を持たず、threadへ移せます。要求はRequested→Preparing→Ready→Published、またはFailed/Cancelledへ進みます。完了の順番でWorldを書き換えず、due tickで明示公開します。必要な要求が未完了ならtick前進を拒否します。
+`GenerationTask`はWorldの可変参照を持たず、threadへ移せます。要求はRequested→Preparing→Ready→Published、またはFailed/Cancelledへ進みます。完了の順番でWorldを書き換えず、due tickで明示公開します。現在tick期限の要求は`publish_generation`で明示公開します。未来のdue tickへ到達する際は`advance_tick`が遷移先を検査し、そのtick期限の要求が全てReadyなら時計と区域を一括公開します。Requested/Preparing/Failedが一つでもあれば時計を進めず、部分公開しません。さらに未来の候補は先取りせず、Cancelledは待機条件から除きます。
 
 worker再開には`restart_generation`を使います。要求IDの世代に加えて試行番号を照合するため、再開前のworker結果は混入しません。Preparingの保存を復元したら作者のworker管理が再開を指示します。OS thread自体は保存しません。
 
@@ -60,7 +60,7 @@ worker再開には`restart_generation`を使います。要求IDの世代に加�
 
 `ChannelDefinition<T>`は値schema、原点、各軸の有理数scale、既定値、容量を指定します。半解像度や負座標に対応し、Worldのresident coverageを満たす位置だけを操作します。`channel_batches`は格納chunk単位の不変sliceを公開します。GridChannelのarrayを地形cell本体へ固定的に追加しません。部分液量も整数・固定小数点など作者が選ぶ値型で保持できます。
 
-`MaterialRemapTable`はowner、layer、安定素材キー、epochを保持します。地形cellとblockの標準ownerはresidentへ一括適用し、後から生成・復帰する区域にも同じ履歴を適用します。独自ownerは同じ台帳から変換を解決できます。blockの形状が変わる変換は暗黙に占有先を書き換えず、作者による配置を含む取引を必要とします。未知キーを空気へ置換しません。
+`MaterialRemapTable`はowner、layer、安定素材キー、epochを保持します。地形cellとblockの標準ownerはresidentへ一括適用し、後から生成・復帰する区域にも同じ履歴を適用します。独自ownerは同じ台帳から変換を解決できます。blockの寸法・形状定義（Customのprovider/版/recordも含む）が変わる変換は、同じ占有cell数でも標準remapの登録時に拒否します。未配置・退避中の個体も同じ契約です。作者が再配置・component移行・参照更新を含む明示取引を実装します。未知キーを空気へ置換しません。
 
 大きなcell編集は`submit_cell_job`、予算付き`step_cell_job`、`publish_cell_job`で処理します。cursor、入力revision、予約chunk、候補pageを保存し、途中をqueryへ公開しません。入力変更時はInvalidatedを返します。復元時はcursorまでを照合し、保存された候補だけに別の編集を混ぜられないよう検証します。blockを含む大規模prefabは作者が個体APIと自身の正規Jobを組み合わせる対象であり、cell Jobで個体を上書きしません。
 
@@ -72,7 +72,7 @@ worker再開には`restart_generation`を使います。要求IDの世代に加�
 
 `CHSAVE01`の世代rootにはengine版、profile、content hash、tick、plugin key/version、scope、kind、codec版、長さ、blob hashを記録します。`CHBLOB01`はkind、形式major/minor、codec版、展開後長、圧縮方式、payload checksumを持ちます。現在の圧縮方式はnoneで、未知方式を無視しません。BLAKE3はcontent/blob照合用です。既存の資産packのSHA-256は変更していません。
 
-`SaveRepository`と`GenerationStorage`は保存媒体を分離します。ローカルadapterはwriter lock、temporary世代、file同期、不変世代の公開、root再検証、CURRENT更新、最低3有効世代の保持を行います。CURRENTが壊れても世代一覧から最後の完全rootを選べます。保存streamが失敗・panicした場合もlockを解放し、不完全なrootを公開しません。
+`SaveRepository`と`GenerationStorage`は保存媒体を分離します。ローカルadapterはwriter lock、temporary世代、file同期、不変世代の公開、root再検証、CURRENT更新、最低3有効世代の保持を行います。`SaveLimits::generations`は保持数keepより大きい値を要求し、新世代を検証してから整理するための最低1世代分を予約します。壊れた世代や一時世代も列挙上限へ数えるので、運用時は追加の余裕を設定します。CURRENTが壊れても世代一覧から最後の完全rootを選べます。保存streamが失敗・panicした場合もlockを解放し、不完全なrootを公開しません。
 
 参照するregion archiveを一つずつ保存rootへ含めるので、未読込世界を全てRAMへ集めません。`World::load`はroot読込から参照blobの検証までread transactionでpruneとの競合を防ぎ、別の空のpaging保存先へも区域を復元できます。低水準の`latest_manifest`と`read_record`を組み合わせる呼出側も`read_transaction`を使ってください。
 

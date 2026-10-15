@@ -280,7 +280,9 @@ impl WorldEdit<'_> {
             editor.world.resolve_activity()
         })
     }
-    /// 一つだけ正規tickを進め、期限切れ要求を解除します。inactiveの地形は変更しません。
+    /// 次tickに必要な生成を一括公開して正規tickを進め、期限切れleaseを解除します。
+    /// 未準備の必須要求があれば時計も地形も公開しません。現在tick期限の要求は先に
+    /// publish_generationで公開し、未来tick期限のReadyは到達時にここで採用します。
     pub fn advance_tick(&mut self) -> EngineResult<()> {
         self.run(|editor| {
             let next = editor
@@ -288,11 +290,20 @@ impl WorldEdit<'_> {
                 .tick
                 .checked_add(1)
                 .ok_or_else(|| invalid("World tick上限"))?;
-            if editor.world.pending_at(editor.world.tick).next().is_some() {
-                return Err(EngineError::new(
-                    ErrorCode::InvalidState,
-                    "必須読込要求の公開待ち",
-                ));
+            let mut ready = Vec::new();
+            ready
+                .try_reserve_exact(editor.world.requests.len())
+                .map_err(allocation)?;
+            // 遷移先を調べてから時計を変更します。現在tickだけを調べると、必須区域が
+            // 欠けた次tickを一度公開してしまいます。全要求の準備が揃うまで待機します。
+            for (reference, request) in editor.world.pending_at(next) {
+                if request.due_tick() != next || request.status() != super::RequestStatus::Ready {
+                    return Err(EngineError::new(
+                        ErrorCode::InvalidState,
+                        "必須読込要求の公開待ち",
+                    ));
+                }
+                ready.push(reference);
             }
             let mut expired = Vec::new();
             expired
@@ -307,6 +318,11 @@ impl WorldEdit<'_> {
                 editor.world.leases.remove(id)?;
             }
             editor.world.tick = next;
+            // candidate内だけで時計を進めた後に公開条件を満たします。途中の失敗でも
+            // 外側のWorld::editが時計・全region・leaseをまとめて巻き戻します。
+            for reference in ready {
+                editor.publish_generation(reference)?;
+            }
             editor.world.resolve_activity()
         })
     }

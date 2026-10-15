@@ -2449,3 +2449,205 @@ fn generated_base_and_sparse_edits_survive_snapshot_and_eviction_without_regener
     );
     assert_eq!(loaded(&again, front, point(1, 1)).core, CellCore::AIR);
 }
+
+#[test]
+fn next_tick_generation_waits_for_every_region_and_publishes_with_the_clock() {
+    let content = content(BreakMode::Cell, BlockShape::Full);
+    let pipeline = pipeline();
+    let mut world = world(Arc::clone(&content));
+    let mut requests = Vec::new();
+    for x in 0..2 {
+        requests.push(
+            world
+                .edit(|edit| {
+                    edit.request_generation(
+                        key("game:required"),
+                        ChunkRegion::single(ChunkCoord::new(x, 0)?)?,
+                        &pipeline,
+                        1,
+                    )
+                })
+                .unwrap(),
+        );
+    }
+    let unchanged = world.checkpoint(2_000_000).unwrap();
+    assert!(world.edit(|edit| edit.advance_tick()).is_err());
+    assert_eq!(world.checkpoint(2_000_000).unwrap(), unchanged);
+    let mut tasks = Vec::new();
+    for request in &requests {
+        tasks.push(world.edit(|edit| edit.begin_generation(*request)).unwrap());
+    }
+    assert!(world.edit(|edit| edit.advance_tick()).is_err());
+    let first = tasks.remove(0).run(&pipeline);
+    world.edit(|edit| edit.submit_generation(first)).unwrap();
+    let half_ready = world.checkpoint(2_000_000).unwrap();
+    assert!(world.edit(|edit| edit.advance_tick()).is_err());
+    assert_eq!(world.checkpoint(2_000_000).unwrap(), half_ready);
+    assert_eq!(world.tick(), 0);
+    assert_eq!(world.resident_chunks(), 0);
+    world
+        .edit(|edit| edit.submit_generation(tasks.remove(0).run(&pipeline)))
+        .unwrap();
+    // due tickより前の公開は引き続き拒否し、保存したReadyも到達時に一括採用します。
+    assert!(
+        world
+            .edit(|edit| edit.publish_generation(requests[0]))
+            .is_err()
+    );
+    let snapshot = world.checkpoint(2_000_000).unwrap();
+    let mut restored =
+        World::restore(&snapshot, content, WorldLimits::default(), 2_000_000).unwrap();
+    restored.edit(|edit| edit.advance_tick()).unwrap();
+    assert_eq!(restored.tick(), 1);
+    assert_eq!(restored.resident_chunks(), 2);
+    assert!(restored.pending_at(1).next().is_none());
+    for request in requests {
+        assert_eq!(
+            restored.request(request).unwrap().status(),
+            RequestStatus::Published
+        );
+    }
+}
+
+#[test]
+fn future_generation_is_not_published_early_and_cancelled_requirements_do_not_block() {
+    let mut world = world(content(BreakMode::Cell, BlockShape::Full));
+    let pipeline = pipeline();
+    let ready = world
+        .edit(|edit| {
+            edit.request_generation(
+                key("game:future"),
+                ChunkRegion::single(ChunkCoord::new(0, 0)?)?,
+                &pipeline,
+                2,
+            )
+        })
+        .unwrap();
+    let cancelled = world
+        .edit(|edit| {
+            edit.request_generation(
+                key("game:cancelled"),
+                ChunkRegion::single(ChunkCoord::new(1, 0)?)?,
+                &pipeline,
+                1,
+            )
+        })
+        .unwrap();
+    let result = world
+        .edit(|edit| edit.begin_generation(ready))
+        .unwrap()
+        .run(&pipeline);
+    world.edit(|edit| edit.submit_generation(result)).unwrap();
+    world
+        .edit(|edit| edit.cancel_generation(cancelled))
+        .unwrap();
+    world.edit(|edit| edit.advance_tick()).unwrap();
+    assert_eq!(world.tick(), 1);
+    assert_eq!(world.resident_chunks(), 0);
+    assert_eq!(world.request(ready).unwrap().status(), RequestStatus::Ready);
+    world.edit(|edit| edit.advance_tick()).unwrap();
+    assert_eq!(world.tick(), 2);
+    assert_eq!(world.resident_chunks(), 1);
+}
+
+#[test]
+fn save_generation_enumeration_requires_and_reuses_one_spare_slot() {
+    let directory = SaveDirectory::new();
+    assert!(matches!(
+        SaveRepository::new(
+            DirectoryStorage::new(&directory.0).unwrap(),
+            SaveLimits {
+                generations: 3,
+                ..SaveLimits::default()
+            },
+            3
+        ),
+        Err(charon_engine::foundation::EngineError {
+            code: ErrorCode::InvalidValue,
+            ..
+        })
+    ));
+    let mut repository = SaveRepository::new(
+        DirectoryStorage::new(&directory.0).unwrap(),
+        SaveLimits {
+            generations: 4,
+            ..SaveLimits::default()
+        },
+        3,
+    )
+    .unwrap();
+    for tick in 1..=9 {
+        let receipt = repository.save(&metadata(tick), records(tick)).unwrap();
+        assert_eq!(receipt.generation, tick);
+        assert!(receipt.cleanup_errors.is_empty());
+        assert_eq!(repository.load_latest().unwrap().metadata.tick, tick);
+        assert_eq!(
+            repository.storage_mut().generations(4).unwrap().len(),
+            (tick as usize).min(3)
+        );
+    }
+}
+
+#[test]
+fn block_remap_rejects_changed_shapes_before_any_instance_or_archive_is_modified() {
+    for (old_shape, new_shape) in [
+        (BlockShape::Platform, BlockShape::Full),
+        (BlockShape::Full, BlockShape::Platform),
+        (BlockShape::Full, BlockShape::OccupancyMask(vec![true; 4])),
+    ] {
+        // 未配置・resident・退避中を同じ契約で検査します。矩形寸法の一致だけでは不十分です。
+        for state in 0..3 {
+            let mut registry = registry();
+            for (name, shape) in [
+                ("game:old", old_shape.clone()),
+                ("game:new", new_shape.clone()),
+            ] {
+                registry
+                    .register(
+                        MaterialBuilder::new(name, MaterialBase::Solid)
+                            .unwrap()
+                            .block_size(2, 2)
+                            .shape(shape)
+                            .break_mode(BreakMode::Cell),
+                    )
+                    .unwrap();
+            }
+            let content = registry.freeze().unwrap();
+            let front = content.layer_id(key("game:front")).unwrap();
+            let mut world = world(content);
+            let coord = ChunkCoord::new(0, 0).unwrap();
+            world.edit(|edit| edit.insert_empty_chunk(coord)).unwrap();
+            if state > 0 {
+                world
+                    .edit(|edit| {
+                        edit.place_block(
+                            front,
+                            point(0, 0),
+                            MaterialHandle(key("game:old")),
+                            Orientation::Original,
+                        )?;
+                        edit.break_at(front, point(0, 0))?;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+            let directory = SaveDirectory::new();
+            let mut archives = DirectoryArchives::new(&directory.0).unwrap();
+            if state == 2 {
+                let receipt = world
+                    .prepare_eviction(ChunkRegion::single(coord).unwrap(), 2_000_000)
+                    .unwrap()
+                    .store(&mut archives)
+                    .unwrap();
+                world.edit(|edit| edit.finish_eviction(receipt)).unwrap();
+            }
+            let before = world.checkpoint(2_000_000).unwrap();
+            let error = world
+                .edit(|edit| edit.remap_materials(remap("engine:blocks", "game:old", "game:new")))
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::Conflict);
+            assert_eq!(world.material_remaps().epoch(), 0);
+            assert_eq!(world.checkpoint(2_000_000).unwrap(), before);
+        }
+    }
+}

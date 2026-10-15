@@ -156,8 +156,22 @@ impl World {
                 self.content.layer_id(*layer)?;
             }
             for (source, target) in &rule.mappings {
-                self.content.material_id(*source)?;
-                self.content.material_id(*target)?;
+                let source = self.content.material_id(*source)?;
+                let target = self.content.material_id(*target)?;
+                if rule.owner == StableKey::parse("engine:blocks")?
+                    && let (Some(old), Some(new)) = (
+                        self.content.material(source)?,
+                        self.content.material(target)?,
+                    )
+                    && (old.block_size() != new.block_size() || old.shape() != new.shape())
+                {
+                    // 未配置・退避中の個体にも後から同じ規則が適用されます。登録時点で
+                    // 拒否し、再読込まで誤った形状変換が潜伏することを防ぎます。
+                    return Err(EngineError::new(
+                        ErrorCode::Conflict,
+                        "block寸法・形状を変えるremapには個体変換が必要",
+                    ));
+                }
             }
         }
         for chunk in self.chunks.values() {
@@ -196,7 +210,7 @@ impl World {
             .try_reserve_exact(self.blocks.len())
             .map_err(crate::foundation::error::allocation)?;
         for (id, block) in self.blocks.iter() {
-            if block.dormant.is_some() || block.epoch == current {
+            if block.epoch == current {
                 continue;
             }
             let old = self
@@ -207,14 +221,17 @@ impl World {
             let target = self.remapped(blocks, block.layer, epoch, block.material)?;
             if target != block.material {
                 if let Some(new) = self.content.material(target)?
-                    && old.block_size() != new.block_size()
+                    && (old.block_size() != new.block_size() || old.shape() != new.shape())
                 {
                     return Err(EngineError::new(
                         ErrorCode::Conflict,
-                        "block寸法を変えるremapには個体変換が必要",
+                        "block寸法・形状を変えるremapには個体変換が必要",
                     ));
                 }
-                updates.push((id, target));
+                // 休止個体は変換の適法性だけを検査し、archiveのpayloadは復帰時に変換します。
+                if block.dormant.is_none() {
+                    updates.push((id, target));
+                }
             }
         }
         let mut removed = std::collections::BTreeSet::new();
