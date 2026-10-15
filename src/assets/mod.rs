@@ -288,16 +288,21 @@ struct Prepared<T: Asset> {
     value: T,
     manifest: AssetManifest,
 }
-/// 非同期importの要求です。dropまたはcancelで、遅れて届く結果の公開を禁止します。
+// 要求枠はcancelと結果回収のどちらからも、一度だけ返却します。
 struct JobPermit(Arc<AtomicUsize>);
 impl Drop for JobPermit {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
+/// 非同期importの要求です。取消時は公開権と完了済み結果を回収します。
+///
+/// Sceneがこの値を保持していても、scope終了時には要求枠と未公開の画像等を回収します。
+/// 実行中codecは強制停止せず、終了時に結果を破棄します。結果の公開はAssetServer::poll
+/// の呼出時だけ行い、workerの完了順でSceneやWorldを変更しません。
 pub struct AssetJob<T: Asset> {
-    _permit: Option<JobPermit>,
-    receiver: mpsc::Receiver<EngineResult<Prepared<T>>>,
+    permit: Arc<Mutex<Option<JobPermit>>>,
+    receiver: Arc<Mutex<mpsc::Receiver<EngineResult<Prepared<T>>>>>,
     cancelled: Arc<AtomicBool>,
     scope: ScopeId,
     key: StableKey,
@@ -306,8 +311,17 @@ pub struct AssetJob<T: Asset> {
 }
 impl<T: Asset> AssetJob<T> {
     /// decode自体が始まっていても、その結果をscope/cacheへ挿入しません。
+    ///
+    /// 何度呼んでも要求枠は一度だけ返します。完了済み結果はここで破棄し、
+    /// この呼出と送信が競合した結果はworker側で回収します。codecの終了待ちは行いません。
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
+        if let Ok(mut permit) = self.permit.lock() {
+            permit.take();
+        }
+        if let Ok(receiver) = self.receiver.lock() {
+            let _ = receiver.try_recv();
+        }
     }
 }
 impl<T: Asset> Drop for AssetJob<T> {
@@ -316,6 +330,11 @@ impl<T: Asset> Drop for AssetJob<T> {
     }
 }
 
+// 型を消した回収処理だけをscopeへ渡し、Sceneに残ったjob自体を強く保持しません。
+struct ScopeJob {
+    flag: std::sync::Weak<AtomicBool>,
+    cancel: Box<dyn Fn() + Send + Sync>,
+}
 /// 全Sceneが共有する資産cache。Worldと異なり正規simulation状態は保持しません。
 pub struct AssetServer {
     id: u64,
@@ -325,7 +344,7 @@ pub struct AssetServer {
     budget: Arc<Budget>,
     slots: BTreeMap<StableKey, Slot>,
     scopes: BTreeMap<ScopeId, Vec<Arc<Resident>>>,
-    scope_jobs: BTreeMap<ScopeId, Vec<std::sync::Weak<AtomicBool>>>,
+    scope_jobs: BTreeMap<ScopeId, Vec<ScopeJob>>,
     inflight: Arc<AtomicUsize>,
     workers: Workers,
 }
@@ -395,9 +414,7 @@ impl AssetServer {
         self.scopes.remove(&scope);
         if let Some(jobs) = self.scope_jobs.remove(&scope) {
             for job in jobs {
-                if let Some(flag) = job.upgrade() {
-                    flag.store(true, Ordering::Release);
-                }
+                (job.cancel)();
             }
         }
     }
@@ -592,15 +609,26 @@ impl AssetServer {
         &mut self,
         job: &mut AssetJob<T>,
     ) -> EngineResult<Option<AssetHandle<T>>> {
-        if job.cache != self.id || job.cancelled.load(Ordering::Acquire) {
-            let _ = job.receiver.try_recv();
-            job._permit.take();
+        if job.cache != self.id {
+            return Err(EngineError::new(
+                ErrorCode::WrongScope,
+                "別cacheのimport要求",
+            ));
+        }
+        if job.cancelled.load(Ordering::Acquire) {
+            job.cancel();
             return Err(invalid_state("取り消したimport"));
         }
-        match job.receiver.try_recv() {
+        // lockをmatchの前に解放します。結果処理中のcancelが同じMutexを再取得できます。
+        let received = {
+            job.receiver
+                .lock()
+                .map_err(|_| invalid_state("import結果のlock"))?
+                .try_recv()
+        };
+        match received {
             Ok(result) => {
                 job.cancel();
-                job._permit.take();
                 let result = result?;
                 if result.manifest.key != job.key {
                     return Err(invalid_state("import要求のkey不一致"));
@@ -608,7 +636,10 @@ impl AssetServer {
                 self.install(job.scope, result, job.generation).map(Some)
             }
             Err(mpsc::TryRecvError::Empty) => Ok(None),
-            Err(_) => Err(invalid_state("import workerが終了")),
+            Err(_) => {
+                job.cancel();
+                Err(invalid_state("import workerが終了"))
+            }
         }
     }
 }
@@ -671,6 +702,8 @@ impl AssetLoader<'_> {
         let job = self.request(key, source, importer)?;
         let result = job
             .receiver
+            .lock()
+            .map_err(|_| invalid_state("import結果のlock"))?
             .recv()
             .map_err(|_| invalid_state("import worker完了待ち"))??;
         self.server.install(self.scope, result, job.generation)
@@ -692,7 +725,9 @@ impl AssetLoader<'_> {
             .map_err(|used| {
                 vfs::capacity("未回収のimport要求数", used + 1, self.server.settings.jobs)
             })?;
-        let permit = JobPermit(Arc::clone(&self.server.inflight));
+        let permit = Arc::new(Mutex::new(Some(JobPermit(Arc::clone(
+            &self.server.inflight,
+        )))));
         // 不要なcache保持を先に落とし、decode結果と旧世代に共通の上限を使います。
         self.server.evict_unused_except(key.key);
         let budget = Arc::clone(&self.server.budget);
@@ -700,6 +735,10 @@ impl AssetLoader<'_> {
         let limits = self.server.settings.import;
         let license = self.server.licenses.get(&path).cloned();
         let (sender, receiver) = mpsc::sync_channel(1);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let weak_receiver = Arc::downgrade(&receiver);
+        let worker_receiver = weak_receiver.clone();
+        let weak_permit = Arc::downgrade(&permit);
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel = Arc::clone(&cancelled);
         let jobs = self
@@ -707,10 +746,34 @@ impl AssetLoader<'_> {
             .scope_jobs
             .get_mut(&self.scope)
             .ok_or_else(|| invalid_state("停止済みscope"))?;
-        jobs.retain(|flag| flag.strong_count() > 0);
+        // 作者が取消済みjobを保持し続けても、scope側の回収表は増やし続けません。
+        jobs.retain(|job| {
+            job.flag
+                .upgrade()
+                .is_some_and(|flag| !flag.load(Ordering::Acquire))
+        });
         jobs.try_reserve(1)
             .map_err(crate::foundation::error::allocation)?;
-        jobs.push(Arc::downgrade(&cancelled));
+        let flag = Arc::downgrade(&cancelled);
+        let scope_flag = flag.clone();
+        jobs.push(ScopeJob {
+            flag,
+            cancel: Box::new(move || {
+                if let Some(flag) = scope_flag.upgrade() {
+                    flag.store(true, Ordering::Release);
+                }
+                if let Some(permit) = weak_permit.upgrade()
+                    && let Ok(mut permit) = permit.lock()
+                {
+                    permit.take();
+                }
+                if let Some(receiver) = weak_receiver.upgrade()
+                    && let Ok(receiver) = receiver.lock()
+                {
+                    let _ = receiver.try_recv();
+                }
+            }),
+        });
         self.server.workers.submit(Box::new(move || {
             if cancel.load(Ordering::Acquire) {
                 return;
@@ -742,9 +805,16 @@ impl AssetLoader<'_> {
             if !cancel.load(Ordering::Acquire) {
                 let _ = sender.send(result);
             }
+            // scope取消とsendが競合し、取消側が空queueを見た場合も、送信側が後から回収します。
+            if cancel.load(Ordering::Acquire)
+                && let Some(receiver) = worker_receiver.upgrade()
+                && let Ok(receiver) = receiver.lock()
+            {
+                let _ = receiver.try_recv();
+            }
         }))?;
         Ok(AssetJob {
-            _permit: Some(permit),
+            permit,
             receiver,
             cancelled,
             scope: self.scope,

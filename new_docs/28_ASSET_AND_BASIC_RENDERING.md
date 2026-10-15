@@ -117,7 +117,7 @@ if let Some(handle) = ctx.assets().poll(&mut job)? {
 }
 ```
 
-scope、cache、要求時の資産世代を公開前に照合する。先行する別のreloadが既に成功した場合はConflictとなる。取消、drop、Scene停止では遅い完了を挿入しない。cancelはcodecの強制thread中断ではなく公開権の取消であり、decodeの終了処理は続く。AssetServerのdropはworkerをjoinする。
+scope、cache、要求時の資産世代を公開前に照合する。先行する別のreloadが既に成功した場合はConflictとなる。取消、drop、Scene停止では遅い完了を挿入しない。cancelは完了済み結果と要求枠も回収する。Sceneがjobを保持したまま停止しても次Sceneの要求枠を塞がない。取消とworkerの送信が競合した場合は送信側でも回収する。codecの強制thread中断は行わず、開始済みdecodeの終了処理は続く。AssetServerのdropはworkerをjoinする。
 
 ## spriteとcameraと描画adapter
 

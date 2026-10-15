@@ -17,7 +17,7 @@
 | [runtime/scene.rs](../../../src/runtime/scene.rs) | LoadContextの資産loader、FrameContextのdraw/reload、Scene scopeとの接続 |
 | [runtime/engine.rs](../../../src/runtime/engine.rs) | 作者AssetServer/RenderAdapterの受取、既定root mount、frame抽出、停止時の保持権解除 |
 | [runtime/host.rs](../../../src/runtime/host.rs) | pixels/wgpuによるGPU表示、実adapter情報、resize、fit/integer、表示上限と固定時計の分離 |
-| [tests/assets.rs](../../../tests/assets.rs) | E03の公開API試験22件 |
+| [tests/assets.rs](../../../tests/assets.rs) | E03の公開API試験24件 |
 | [fixture](../../../tests/fixtures/e03/README.md) | 同じpack・PNG・WAV・Ogg・atlas・OFL fontを各OSへ渡す固定データ |
 
 既存の特定ゲーム向け`render.rs`や`core::engine`へ逆依存しない。Worldの保存・simulation形式は変更していない。公開APIは`assets`と`presentation`を追加し、LoadContext/FrameContextを拡張した。設定schema 1へ互換な`render.scaling: fit/integer`を追加し、[設定文書](../../05_ENGINE_CONFIGURATION.md)も更新した。
@@ -57,6 +57,7 @@ GPUは既存のpixels/wgpu、windowは既存のwinitを使う。音声再生・�
 | --- | --- |
 | workerの完了待ち結果がcache予算外になる | 準備中からBudgetPermitを持ち、公開後も同じ予算をresidentへ移す |
 | 待ち行列だけの制限では未回収jobを増やせる | 未回収要求数も別のpermitで制限し、回収・取消・dropで解除 |
+| Sceneが未回収jobを保持すると停止後も結果と要求枠が残る | scope取消とjob取消で結果・要求枠を回収し、送信との競合もworker側で回収。別cacheへの誤pollは元のjobを消費しない |
 | 停止後も古いscopeへ完了を返せる | scopeごとの取消flagと公開前のscope・cache・世代検証 |
 | reload前のscope保持が同じキーで積み重なる | そのscopeの旧世代保持を新世代へ置換。明示leaseと別scopeの保持は維持 |
 | PNGの古いsource_gamma fieldではgAMAを取得できない | 現行decoderのgamma()/chromaticities()を使い、linear gray 128→sRGB 188を試験 |
@@ -84,7 +85,7 @@ GPUは既存のpixels/wgpu、windowは既存のwinitを使う。音声再生・�
 
 コミット予定のtreeを別の作業コピーへ展開して検査する。旧M3等の未コミット変更を含まない構成では既存が101件となるため、E01 19 + E02 24 + E03 22を加えた**166件**が対象になる。作業ツリーの177件とは区別する。
 
-[E03 CI](../../../.github/workflows/e03-assets.yml)はWindows、Ubuntu、macOSで同じ固定packの読込、各形式のimport、scope/世代/取消、CPU参照描画、headless作例を実行する。結果は実行後に追記する。Windows実機以外のGPU/surface認定を、このheadless CIの成功だけで主張しない。
+[E03 CI](../../../.github/workflows/e03-assets.yml)はWindows、Ubuntu、macOSで同じ固定packの読込、各形式のimport、scope/世代/取消、CPU参照描画、headless作例を実行する。初回コミット`286f6f4`は[3 OS CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38660153737)と[Rust CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38660153589)で成功した。取消回収の追加修正は再検証する。Windows実機以外のGPU/surface認定を、このheadless CIの成功だけで主張しない。
 
 ## 後工程の範囲
 
@@ -95,3 +96,11 @@ E04がmaterial/chunk/保存へ、E09がlight/shadow/render graph/UI/文字組み
 ### コミット対象の最終ローカル検査
 
 indexから展開した`target/e03-review-tree`で、境界修正後の全166件、fmt、全target check、警告拒否Clippy、Rustdocが成功した。最終コードのOS window smokeもVulkan / GeForce RTX 4060で成功し、120固定tickの間に285表示frameを実行した。旧M3等の変更はこの検査とコミットに含めていない。
+
+### 取消回収の追加修正
+
+Sceneがjobを保持したまま停止する場合と、明示cancel後もjobを保持する場合を追加した。完了済み結果のbytesが0へ戻り、jobs=1でも次の要求を受理できることを確認した。別cacheへの誤pollが元の要求を失わせない試験も加えた。
+
+最終の分離作業コピーで全**168件**（既存101 + E01 19 + E02 24 + E03 24）、fmt、全target check、警告拒否Clippy、Rustdocが成功した。上の177件・166件は追加修正前の実行履歴であり、今回の最終件数とは区別する。
+
+追加修正後のOS window smokeもVulkan / GeForce RTX 4060で成功した。120固定tick、273表示frame、exit code 0を確認した。

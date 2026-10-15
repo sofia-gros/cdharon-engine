@@ -939,3 +939,79 @@ fn linear_filter_uses_premultiplied_colors_at_transparent_edges() {
     // 透明な青を混ぜて紫にせず、赤の透明度だけを補間します。
     assert_eq!(&pixels[4..8], &[255, 0, 0, 128]);
 }
+
+#[test]
+fn cancellation_reclaims_ready_results_even_when_the_job_is_retained() {
+    for close_scope in [false, true] {
+        let (_arena, a, b) = scopes();
+        let mut server = AssetServer::new(
+            source(),
+            AssetSettings {
+                jobs: 1,
+                ..AssetSettings::default()
+            },
+        )
+        .unwrap();
+        server.open_scope(a).unwrap();
+        server.open_scope(b).unwrap();
+        let mut old = server
+            .loader(a)
+            .unwrap()
+            .request(
+                AssetKey::<ImageAsset>::new("old").unwrap(),
+                "game:tiles.png",
+                PngImporter::default(),
+            )
+            .unwrap();
+        // decodeの予約が実際の画像量へ縮んだ後も、結果はpollせずjob内へ残します。
+        let start = Instant::now();
+        while server.resident_bytes() != 32 {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        if close_scope {
+            server.close_scope(a);
+        } else {
+            old.cancel();
+        }
+        let start = Instant::now();
+        while server.resident_bytes() != 0 {
+            assert!(start.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // oldを保持したままでも要求枠を再利用でき、停止済み結果は公開されません。
+        let mut next = server
+            .loader(b)
+            .unwrap()
+            .request(
+                AssetKey::<ImageAsset>::new("next").unwrap(),
+                "game:tiles.png",
+                PngImporter::default(),
+            )
+            .unwrap();
+        assert!(server.poll(&mut old).is_err());
+        assert!(wait(&mut server, &mut next).is_ok());
+    }
+}
+
+#[test]
+fn polling_on_another_server_does_not_consume_the_original_job() {
+    let (_arena, a, _) = scopes();
+    let mut owner = server();
+    let mut other = server();
+    owner.open_scope(a).unwrap();
+    let mut job = owner
+        .loader(a)
+        .unwrap()
+        .request(
+            AssetKey::<ImageAsset>::new("tiles").unwrap(),
+            "game:tiles.png",
+            PngImporter::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        other.poll(&mut job).unwrap_err().code,
+        ErrorCode::WrongScope
+    );
+    assert!(wait(&mut owner, &mut job).is_ok());
+}
