@@ -459,14 +459,15 @@ impl EngineBuilder {
         let mut built = 0;
         let result = (|| {
             for plugin in &ordered {
-                // buildで部分準備したpluginも終了対象に含めます。
-                built += 1;
                 plugin.configure(
                     settings
                         .plugins
                         .get(plugin.key().as_str())
                         .unwrap_or(&serde_yaml::Value::Null),
                 )?;
+                // configureだけで拒否された実装は未初期化です。buildを開始する直前から
+                // 解放対象へ含め、build途中の失敗では部分的な資源も逆順で回収します。
+                built += 1;
                 plugin.build(&mut self.app)?;
             }
             self.app.services.validate()?;
@@ -886,6 +887,19 @@ struct PendingTick {
     scenes_updated: bool,
     same_tick_runs: u64,
 }
+impl PendingTick {
+    // 実行完了と活動状態によるスキップで同じ境界処理を使います。phase末尾が
+    // 非実行でも先行commandを次phaseへ渡し、poll予算が切れても順序を維持します。
+    fn finish_system(&mut self, systems: &[SystemEntry]) -> EngineResult<()> {
+        let phase = systems[self.cursor].descriptor.phase;
+        self.same_tick_runs = 0;
+        self.cursor += 1;
+        if self.cursor == systems.len() || systems[self.cursor].descriptor.phase != phase {
+            self.commands.flush(&mut self.worlds)?;
+        }
+        Ok(())
+    }
+}
 
 /// 一回のpollでtickが完了したかを区別します。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1176,7 +1190,7 @@ impl Engine {
                         .iter()
                         .any(|world| world.key == key && world.paused)
                 }) {
-                    pending.cursor += 1;
+                    pending.finish_system(&self.systems)?;
                     continue;
                 }
                 if entry.descriptor.scene.is_some_and(|key| {
@@ -1185,7 +1199,7 @@ impl Engine {
                         .iter()
                         .any(|scene| scene.key == key && scene.state == SceneState::Running)
                 }) {
-                    pending.cursor += 1;
+                    pending.finish_system(&self.systems)?;
                     continue;
                 }
                 let status = entry.system.run(&mut SystemContext {
@@ -1218,14 +1232,7 @@ impl Engine {
                         ));
                     }
                 } else {
-                    pending.same_tick_runs = 0;
-                    let phase = entry.descriptor.phase;
-                    pending.cursor += 1;
-                    if pending.cursor == self.systems.len()
-                        || self.systems[pending.cursor].descriptor.phase != phase
-                    {
-                        pending.commands.flush(&mut pending.worlds)?;
-                    }
+                    pending.finish_system(&self.systems)?;
                 }
             }
             if pending.cursor < self.systems.len() {
