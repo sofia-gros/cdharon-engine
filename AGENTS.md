@@ -2,15 +2,23 @@
 
 ## Source of truth
 
-- Start with [`codex/README.md`](codex/README.md) for current behavior and [`codex/design/00_INDEX.md`](codex/design/00_INDEX.md) for the product design.
-- Treat `codex/design/02_CONTRACTS.md` as the shared target contract. Treat `src/` and `Cargo.toml` as evidence of what the code actually implements.
-- Read only the system design documents relevant to the task. Do not silently present a planned feature as implemented.
-- When implementation reveals a conflict in the design, identify the affected contract and update the linked design and audit documents with the code change.
+- Start with [`new_docs/README.md`](new_docs/README.md). The user's explicit requirements and the documents under `new_docs/` are the product design authority.
+- The previous documentation, including the root `README.md`, `codex/`, and `gemini/`, is retired and retained only as historical files. Do not read it to guide development or import its requirements, restrictions, milestones, or completion claims. Consult it only when the user explicitly requests a historical comparison.
+- Treat `src/`, `Cargo.toml`, and executed checks as evidence of current implementation, never as limits on the user's intended product.
+- Read only the new design pages relevant to the task. Distinguish user requirements, proposed designs, unresolved decisions, and verified implementation. Do not silently present a planned feature as implemented.
+- Charon Engine is an open-source, general-purpose 2D sandbox game engine. Creators own game rules, assets, entities, and progression. Specific games demonstrate the engine's capabilities and must not define mandatory gameplay in the engine core.
+- The product combines Fabric API-style feature access and extensibility with Phaser-style scene, input, resource, and runtime management, integrated with 2D sandbox simulation. Interpret those reference experiences as Rust APIs: structs and traits for Scenes and systems, typed builders for construction, ordinary methods for runtime changes, and typed handles and scoped callbacks for access. Do not mechanically translate the user's illustrative JavaScript, class inheritance, dynamic options objects, prototype methods, or tentative spellings into the specification. Apply engineering judgment and explain design decisions.
+- Cargo selects compiled implementations and dependencies; YAML configures engine runtime behavior and services; Rust code defines game content and registers Scenes, plugins, and custom behavior. Use those responsibilities to classify settings, rather than treating examples as an exhaustive list. YAML cannot enable absent compiled code or unsupported hardware. Block dimensions belong to material builders; player composition and controls belong to creator code and object APIs.
+- Prioritize engine correctness, performance, extensibility, and maintainability. Human-readable API design is the default within those constraints. Expose and explain necessary batching, reservations, jobs, ownership, and synchronization costs instead of compromising the engine to hide complexity.
+- Target commercial v1.0.0 using the requirements, architecture, data contracts, acceptance games, and release gates under `new_docs/`. Both Terraria-style and Noita-style games must be possible through public APIs, including destructible rotating bodies, material interaction, AI/navigation, spatial queries, and configurable offscreen activity. Do not downgrade required mechanisms to visual demonstrations or claim implementation completion from documentation alone.
+- When implementation reveals a conflict, identify the affected user requirement and update the owning documents under `new_docs/`. Never narrow the user's goal to match existing code or make a milestone easier to pass.
+- Apply P001 in `new_docs/25_OPEN_EXTENSION_AND_COLLISION_CONTRACTS.md`. Standard solvers, next-tick deferral, numeric formats, randomness, and networking policies must not limit creator-authored behavior. Provide public provider, channel, state, schedule, collision, persistence, rendering, and networking integration routes. Judge Terraria and Noita reproduction by the full-clone acceptance ledger in `new_docs/26_FULL_CLONE_ACCEPTANCE.md`, never by genre similarity or representative mechanics alone. Distinguish design feasibility, verified SDK capability, and observed clone fidelity.
+- Product changes are tracked as P (Plus) items. An explicitly adopted P takes precedence over overlapping earlier specifications and implementation. Record the affected requirements and implementation work; do not claim completion from documentation alone.
 
 ## Engineering rules
 
 - Keep simulation state independent from windowing, rendering, audio, wall-clock time, and asynchronous completion order.
-- Preserve deterministic ordering, atomic world and inventory changes, explicit capacity errors, and save/replay state coverage from the design contracts.
+- Follow the agreed contracts under `new_docs/` for ordering, atomic state changes, capacity errors, and save/replay coverage. The retired documents do not establish these product contracts.
 - Keep rendering data separate from simulation data. Prefer a correct scalar reference implementation before optimizing.
 - Avoid new dependencies unless the task needs them. Explain their purpose and alternatives in the change.
 - Make focused changes and keep public API, content, save format, and simulation version changes explicit.
@@ -33,7 +41,7 @@ Run the narrowest relevant checks while iterating, then the full set when implem
 
 ## Documentation
 
-Keep user-facing current behavior in `codex/README.md`, normative product design in `codex/design/`, and historical/background material in `gemini/`. Use relative links that work on GitHub.
+Keep product purpose, creator workflows, requirements, design decisions, and verified implementation records under `new_docs/`. Preserve retired documentation without treating it as an active specification. Use relative links that work on GitHub.
 
 ## Language and code documentation
 
