@@ -73,3 +73,14 @@ E05全体とQ04は引き続き未完了。今回の対応は輸送・圧力の�
 - Linux / Rust 1.98.1で全250テスト成功（lib/host 107、assets 24、foundation 19、material_transport 22、runtime 28、world 50）。失敗・無視なし。fmt、全target check、警告拒否Clippy・Rustdocも成功した。
 
 E05全体・Q04の未完了と残作業は変わらない。追加commit・push後に再レビューを確認する。
+
+### 再々レビュー：圧力出力の容量再利用
+
+`5039cb6`の再レビューで[圧力chunkを解放する前の確保](https://github.com/sofia-gros/charon-engine/pull/4#discussion_r4289404815)を指摘された。同commitのCIは20件すべて成功した。
+
+- channelの非既定値数から最終byte数を求める処理を輸送と圧力出力で共有する。全出力の座標重複・値・coverage・個別chunk上限・World全体のbyte上限を配列確保前に検査する。
+- 既定値への出力を先に適用し、空chunkを解放してから他の出力を適用する。編集の書込数、coverageのrevision更新、失敗時のWorld取引全体の破棄は既存のset_channelを使う。
+- 追加2テストで、正圧を新たに得る水柱と0になる自由表面の座標順を反転し、channel上限・World上限・両上限で同じ結果となることを検査した。既定値が5のchannelで、閉領域が既定値に戻って解放され、別chunkの自由表面0を確保できることも検査した。両テストとも修正前のpressure実装で失敗することを確認した。
+- Linux / Rust 1.98.1で全252テスト成功（lib/host 107、assets 24、foundation 19、material_transport 24、runtime 28、world 50）。失敗・無視なし。fmt、全target check、警告拒否Clippy・Rustdocも成功した。公開APIと保存形式の変更なし。
+
+E05全体・Q04は未完了。輸送・圧力の外部レビュー対応後に残るE05の実装へ進む。

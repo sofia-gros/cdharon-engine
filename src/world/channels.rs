@@ -171,6 +171,36 @@ impl<T: GridValue + Send + Sync + 'static> Storage<T> {
         }
         Ok(values)
     }
+    fn projected_bytes(&self, changes: &mut [((i32, i32), i64)]) -> EngineResult<usize> {
+        changes.sort_unstable_by_key(|(coordinate, _)| *coordinate);
+        let mut chunks = self.grid.allocated_chunks();
+        let mut index = 0;
+        while index < changes.len() {
+            let coordinate = changes[index].0;
+            let before = self.grid.non_default_count(coordinate);
+            let mut after = before as i64;
+            while index < changes.len() && changes[index].0 == coordinate {
+                after += changes[index].1;
+                index += 1;
+            }
+            if before == 0 && after > 0 {
+                chunks += 1;
+            } else if before > 0 && after == 0 {
+                chunks -= 1;
+            }
+        }
+        if chunks > self.definition.0.limits.chunks as usize {
+            return Err(EngineError::capacity(
+                "channel chunk数",
+                chunks as u64,
+                self.definition.0.limits.chunks.into(),
+            ));
+        }
+        chunks
+            .checked_mul(4096)
+            .and_then(|cells| cells.checked_mul(size_of::<T>()))
+            .ok_or_else(|| invalid("更新後のchannel byte数overflow"))
+    }
     fn non_default(&self) -> impl Iterator<Item = (CellPoint, T)> + '_ {
         self.grid.batches().flat_map(move |((cx, cy), values)| {
             values
@@ -306,34 +336,7 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
                 - i64::from(!old.same(self.definition.0.default));
             changes.push((point.chunk_local().0, delta));
         }
-        changes.sort_unstable_by_key(|(coordinate, _)| *coordinate);
-        let mut chunks = self.grid.allocated_chunks();
-        let mut index = 0;
-        while index < changes.len() {
-            let coordinate = changes[index].0;
-            let before = self.grid.non_default_count(coordinate);
-            let mut after = before as i64;
-            while index < changes.len() && changes[index].0 == coordinate {
-                after += changes[index].1;
-                index += 1;
-            }
-            if before == 0 && after > 0 {
-                chunks += 1;
-            } else if before > 0 && after == 0 {
-                chunks -= 1;
-            }
-        }
-        if chunks > self.definition.0.limits.chunks as usize {
-            return Err(EngineError::capacity(
-                "channel chunk数",
-                chunks as u64,
-                self.definition.0.limits.chunks.into(),
-            ));
-        }
-        chunks
-            .checked_mul(4096)
-            .and_then(|cells| cells.checked_mul(size_of::<T>()))
-            .ok_or_else(|| invalid("輸送後のchannel byte数overflow"))
+        self.projected_bytes(&mut changes)
     }
     fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()> {
         if self.definition.1 != Some(layer) {
@@ -558,6 +561,57 @@ impl World {
             state.validate(self)?;
         }
         Ok(())
+    }
+}
+impl World {
+    /// 全出力の最終容量を、channel配列を確保する前に検査します。
+    /// 呼出側は返された既定値への更新を先に適用し、空chunkを回収してから再配置します。
+    pub(super) fn validate_channel_updates<T: GridValue + Send + Sync + 'static>(
+        &self,
+        key: StableKey,
+        updates: &[(CellPoint, T)],
+    ) -> EngineResult<T> {
+        let storage = self.typed_channel::<T>(key)?;
+        let default = storage.definition.0.default;
+        let mut points = Vec::new();
+        let mut changes = Vec::new();
+        points
+            .try_reserve_exact(updates.len())
+            .map_err(allocation)?;
+        changes
+            .try_reserve_exact(updates.len())
+            .map_err(allocation)?;
+        for &(point, value) in updates {
+            value.validate()?;
+            if !matches!(
+                self.channel_value::<T>(key, point)?,
+                ChannelQuery::Loaded(_)
+            ) {
+                return Err(invalid("channel一括更新のcoverageが未準備または境界外"));
+            }
+            points.push((point.x, point.y));
+            let delta =
+                i64::from(!value.same(default)) - i64::from(!storage.grid.get(point).same(default));
+            changes.push((point.chunk_local().0, delta));
+        }
+        points.sort_unstable();
+        if points.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(invalid("channel一括更新の座標重複"));
+        }
+        let final_bytes = storage.projected_bytes(&mut changes)?;
+        let required = self
+            .channel_bytes()
+            .checked_sub(storage.bytes())
+            .and_then(|bytes| bytes.checked_add(final_bytes))
+            .ok_or_else(|| invalid("channel一括更新のbyte数overflow"))?;
+        if required > self.limits.channel_bytes {
+            return Err(EngineError::capacity(
+                "channel byte数",
+                required as u64,
+                self.limits.channel_bytes as u64,
+            ));
+        }
+        Ok(default)
     }
 }
 impl WorldEdit<'_> {

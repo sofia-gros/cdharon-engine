@@ -36,6 +36,14 @@ fn definition(name: &str, origin: CellPoint, chunks: u32) -> ChannelDefinition<u
     }
 }
 fn content(chunks: u32, follow: bool) -> Arc<Content> {
+    content_with_pressure(chunks, follow, 8, 0)
+}
+fn content_with_pressure(
+    chunks: u32,
+    follow: bool,
+    pressure_chunks: u32,
+    default_pressure: i64,
+) -> Arc<Content> {
     let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
     for name in ["game:front", "game:back"] {
         registry
@@ -81,9 +89,9 @@ fn content(chunks: u32, follow: bool) -> Arc<Content> {
                 x_scale: GridScale::new(1, 1).unwrap(),
                 y_scale: GridScale::new(1, 1).unwrap(),
             },
-            default: 0i64,
+            default: default_pressure,
             limits: GridLimits {
-                chunks: 8,
+                chunks: pressure_chunks,
                 checkpoint_bytes: 1_000_000,
             },
         })
@@ -1089,4 +1097,102 @@ fn transport_reuses_bytes_freed_by_another_material_channel() {
     assert_eq!(world.channel_bytes(), 3 * 4096 * 8);
     assert_eq!(value(&world, "game:energy", point(64, 2)), 7);
     assert_eq!(value(&world, "game:timer", point(63, 2)), 11);
+}
+
+#[test]
+fn pressure_reuses_released_chunk_capacity_independently_of_coordinate_order() {
+    for (channel_limit, byte_limit) in [(1, usize::MAX), (8, 4096 * 8), (1, 4096 * 8)] {
+        for (column_x, surface_x) in [(3, 67), (67, 3)] {
+            let content = content_with_pressure(8, true, channel_limit, 0);
+            let layer = content.layer_id(key("game:front")).unwrap();
+            let mut world = World::new(
+                WorldId::from_parts(0, 1).unwrap(),
+                3,
+                WorldBounds::expandable(),
+                content,
+                WorldLimits {
+                    channel_bytes: byte_limit,
+                    ..WorldLimits::default()
+                },
+            )
+            .unwrap();
+            let water = material(&world, "game:water");
+            let stone = material(&world, "game:stone");
+            world
+                .edit(|edit| {
+                    for x in 0..2 {
+                        edit.insert_empty_chunk(ChunkCoord::new(x, 0)?)?;
+                    }
+                    for y in 2..=4 {
+                        edit.set_cell(layer, point(column_x, y), water)?;
+                        edit.set_cell(layer, point(column_x - 1, y), stone)?;
+                        edit.set_cell(layer, point(column_x + 1, y), stone)?;
+                    }
+                    edit.set_cell(layer, point(column_x, 5), stone)?;
+                    edit.set_cell(layer, point(surface_x, 2), water)?;
+                    edit.set_channel(key("game:fluid-pressure"), point(surface_x, 2), 77i64)
+                })
+                .unwrap();
+            activate(&mut world, 0, 2);
+            assert_eq!(world.channel_bytes(), 4096 * 8);
+            world
+                .edit(|edit| edit.relax_pressure(layer, pressure_config(4)))
+                .unwrap();
+            assert_eq!(world.channel_bytes(), 4096 * 8);
+            assert_eq!(
+                (2..=4)
+                    .map(|y| pressure(&world, point(column_x, y)))
+                    .collect::<Vec<_>>(),
+                [0, 245760, 491520]
+            );
+            assert_eq!(pressure(&world, point(surface_x, 2)), 0);
+        }
+    }
+}
+
+#[test]
+fn pressure_releases_nonzero_default_chunks_before_writing_surface_zeroes() {
+    let content = content_with_pressure(8, true, 1, 5);
+    let layer = content.layer_id(key("game:front")).unwrap();
+    let mut world = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        3,
+        WorldBounds::expandable(),
+        content,
+        WorldLimits {
+            channel_bytes: 4096 * 8,
+            ..WorldLimits::default()
+        },
+    )
+    .unwrap();
+    let water = material(&world, "game:water");
+    let stone = material(&world, "game:stone");
+    world
+        .edit(|edit| {
+            for x in 0..2 {
+                edit.insert_empty_chunk(ChunkCoord::new(x, 0)?)?;
+            }
+            for x in 67..=68 {
+                for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
+                    edit.set_cell(layer, point(x + dx, 2 + dy), stone)?;
+                }
+            }
+            for x in 67..=68 {
+                edit.set_cell(layer, point(x, 2), water)?;
+            }
+            edit.set_cell(layer, point(3, 2), water)?;
+            edit.set_channel(key("game:fluid-pressure"), point(67, 2), 0i64)?;
+            edit.set_channel(key("game:fluid-pressure"), point(68, 2), 10i64)
+        })
+        .unwrap();
+    activate(&mut world, 0, 2);
+    let mut config = pressure_config(3);
+    config.gravity_q16 = 0;
+    world
+        .edit(|edit| edit.relax_pressure(layer, config))
+        .unwrap();
+    assert_eq!(world.channel_bytes(), 4096 * 8);
+    assert_eq!(pressure(&world, point(3, 2)), 0);
+    assert_eq!(pressure(&world, point(67, 2)), 5);
+    assert_eq!(pressure(&world, point(68, 2)), 5);
 }

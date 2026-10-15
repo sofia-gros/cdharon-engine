@@ -217,12 +217,24 @@ impl WorldEdit<'_> {
                 }
                 std::mem::swap(&mut old, &mut next);
             }
+            let mut updates = Vec::new();
+            updates
+                .try_reserve_exact(samples.len())
+                .map_err(allocation)?;
             for (sample, pressure) in samples.into_iter().zip(old) {
-                editor.set_channel(
-                    config.channel,
-                    channel_point(sample.point, layout.origin)?,
-                    pressure,
-                )?;
+                updates.push((channel_point(sample.point, layout.origin)?, pressure));
+            }
+            let default = editor
+                .world
+                .validate_channel_updates(config.channel, &updates)?;
+            // 最終容量だけを予約し、既定値へ戻る出力を先に反映します。位置の走査順で
+            // 不要な同時確保を要求しません。既定値が0以外のchannelにも同じ規則を適用します。
+            for clearing in [true, false] {
+                for &(point, pressure) in &updates {
+                    if (pressure == default) == clearing {
+                        editor.set_channel(config.channel, point, pressure)?;
+                    }
+                }
             }
             Ok(report)
         })
