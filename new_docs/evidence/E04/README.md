@@ -2,7 +2,7 @@
 
 ## 対象と状態
 
-開始revisionは`91f173d`、実装ブランチは`codex/e04-world-and-persistence`です。E04の実装、出口レビュー、Windowsでの全体検査と分離tree検査を完了しました。OS CIはpush後に結果を記録します。
+開始revisionは`91f173d`、実装ブランチは`codex/e04-world-and-persistence`です。E04の実装、出口レビュー、Windowsでの全体検査と分離tree検査を完了しました。初回実装の3 OS CIも成功しました。統合後の検証は末尾へ記録します。
 
 [世界](../../09_WORLD_AND_STREAMING.md)、[データ](../../08_DATA_MODEL_AND_FORMATS.md)、[schema](../../23_CONTENT_AND_STATE_SCHEMAS.md)、[保存](../../14_PERSISTENCE_AND_REPLAY.md)、[活動域](../../24_AI_NAVIGATION_AND_SPATIAL_ACTIVITY.md)、[P001](../../25_OPEN_EXTENSION_AND_COLLISION_CONTRACTS.md)に基づきました。使用方法と実装契約は[29_WORLD_AND_PERSISTENCE.md](../../29_WORLD_AND_PERSISTENCE.md)を参照してください。
 
@@ -57,3 +57,20 @@ Windowsのfile同期とrename、Unixのdirectory同期を`SaveDurability`で区�
 COW pageに加え、独立候補の個体arena・管理辞書・全体検証にも費用があります。定数時間編集とは説明しません。圧縮方式noneを明示し、未知方式を拒否します。body、Entity、AI等の後工程のデータは各工程でこの保存・区域契約へ接続します。E04だけで完全クローンや商用v1を実証したとは扱いません。
 
 開始時から存在する旧simulation/game等の変更は今回のcommitへ含めません。旧文書を実装仕様として使っていません。
+
+## commit/push後のPR指摘対応と統合
+
+E04の実装を`0b1adf1`でcommit/pushした後、ユーザー指定の順番でE02/E03のPR指摘に対応しました。
+
+- PR #1：`d3afe3b`。phase末尾スキップ、World所属による競合除外、configure失敗前のplugin解放の3件を修正し、全147件と品質検査を通過してpushしました。
+- PR #2：`f779707`で共通修正を取り込み、`58b649d`でpointerの物理→論理変換、余白/window外の無効化、resize再投影を修正。全174件と品質検査、実windowの120tick検査を通過してpushしました。
+- E04：両方を`1ef310c`と`d6c2ced`へ取り込みました。旧実装の未コミット変更を含めないHEADの分離treeで、**215件**（既存・host 103、資産24、Core 19、Runtime 28、World 41）、整形、全target check、警告拒否Clippy、Rustdoc、sandbox_worldが全て成功しました。
+
+E04初回実装`0b1adf1`のCI結果：
+
+- [世界と保存：Windows・Ubuntu・macOS](https://github.com/sofia-gros/charon-engine/actions/runs/38753762911)：3 job成功。
+- [Rust CI](https://github.com/sofia-gros/charon-engine/actions/runs/38753762530)：成功。
+- [資産と参照描画の3 OS](https://github.com/sofia-gros/charon-engine/actions/runs/38753762515)：成功。
+- [PR #1修正のRust CI](https://github.com/sofia-gros/charon-engine/actions/runs/38754310939)：成功。
+
+未実行・実行中のCIを成功へ数えず、ソースrevisionと結果の対応を保ちます。PRコメントへの投稿やPRのmergeは行っていません。

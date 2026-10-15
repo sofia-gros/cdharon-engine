@@ -24,7 +24,9 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 | E03：資産と基本表示 | VFSとpack、PNG・WAV/Ogg・fontのimport、共有cache、解放・世代差し替え、sprite、camera、描画adapter | [実装・検証記録](new_docs/evidence/E03/README.md) |
 | E04：世界と保存基盤 | 多layer・素材寸法・個体・部分生成・lease・独自channel・区域退避・世代保存 | [実装・検証記録](new_docs/evidence/E04/README.md) |
 
-E03のコードは全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
+E03の初回実装は全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
+
+E2・E3のPR指摘対応を取り込んだE04は、分離treeの全215件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
 
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
