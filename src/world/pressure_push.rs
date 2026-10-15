@@ -58,6 +58,10 @@ pub struct PressurePushSearch {
     nodes: Vec<(CellPoint, u32)>,
     cursor: usize,
     goal: Option<u32>,
+    // 訪問bitsetはnode列から復元できる索引で、保存形式には含めません。
+    visited: super::transport::CellReservations,
+    // 復元直後の実地形検査もstep予算に含めます。新規追加nodeは発見時に検査済みです。
+    validated_nodes: usize,
 }
 impl PressurePushSearch {
     /// 活動中の液体または気体cellから探索を始めます。開始だけでは輸送しません。
@@ -107,6 +111,8 @@ impl PressurePushSearch {
         let mut nodes = Vec::new();
         nodes.try_reserve_exact(1).map_err(allocation)?;
         nodes.push((source, 0));
+        let mut visited = super::transport::CellReservations::for_chunks(&chunks)?;
+        visited.insert(source)?;
         Ok(Self {
             world: world.id,
             content: world.content.fingerprint(),
@@ -120,11 +126,16 @@ impl PressurePushSearch {
             nodes,
             cursor: 0,
             goal: None,
+            visited,
+            validated_nodes: 1,
         })
     }
-    /// 現在の段階。容量不足や入力失効はstepのエラーとして区別して返します。
+    /// 現在の段階。復元後はnodeの実地形検査が完了するまでSearchingです。
+    /// 容量不足や入力失効はstepのエラーとして区別して返します。
     pub fn status(&self) -> PressurePushStatus {
-        if self.goal.is_some() {
+        if self.validated_nodes < self.nodes.len() {
+            PressurePushStatus::Searching
+        } else if self.goal.is_some() {
             PressurePushStatus::Ready
         } else if self.cursor == self.nodes.len() {
             PressurePushStatus::NoOutlet
@@ -157,77 +168,98 @@ impl PressurePushSearch {
     /// 近傍は上・左・右・下の固定順です。同じ素材の活動cellだけを通過し、空cellで
     /// `Psrc - Pdst + mass*g*(ydst-ysrc) > threshold`を満たす経路を採用します。
     /// 未読込と活動外はno-flow境界です。step失敗時には探索cursorも元のままです。
+    /// 訪問bitsetは保持し、今回の追記nodeだけを失敗時に巻き戻します。復元直後は
+    /// 既存nodeの実地形検査も一件ずつbudgetから消費し、完了後に探索を再開します。
+    /// 読込済みchunkの活動集合と入力revisionの検査も別途行います。Vecの容量拡張は償却費用で、
+    /// 保存・明示的な候補複製・公開時の全体検査はこのstep予算とは別です。
     pub fn step(&mut self, world: &World, budget: usize) -> EngineResult<PressurePushStatus> {
-        self.validate_inputs(world)?;
-        let mut candidate = self.try_copy()?;
-        let layer = world.content.layer_id(candidate.layer)?;
-        let mut visited = super::transport::CellReservations::new(world)?;
-        for (point, _) in &candidate.nodes {
-            visited.insert(*point)?;
-        }
-        for _ in 0..budget {
-            if candidate.status() != PressurePushStatus::Searching {
-                break;
-            }
-            let parent = candidate.cursor;
-            let point = candidate.nodes[parent].0;
-            for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
-                let (Some(x), Some(y)) = (point.x.checked_add(dx), point.y.checked_add(dy)) else {
-                    continue;
-                };
-                let next = CellPoint { x, y };
-                if visited.contains(next) {
+        self.validate_context(world)?;
+        let layer = world.content.layer_id(self.layer)?;
+        let previous_len = self.nodes.len();
+        let previous_cursor = self.cursor;
+        let previous_goal = self.goal;
+        let previous_validated = self.validated_nodes;
+        // node列の全複製は行いません。今回の追記だけを候補として末尾へ置き、
+        // 失敗時は追記nodeの訪問bitとcursorを巻き戻します。
+        let result = (|| {
+            for _ in 0..budget {
+                if self.validated_nodes < self.nodes.len() {
+                    self.validate_node(world, layer, self.validated_nodes)?;
+                    self.validated_nodes += 1;
                     continue;
                 }
-                if !world
-                    .chunks
-                    .get(&ChunkCoord::at(next))
-                    .is_some_and(|chunk| chunk.active)
-                {
-                    continue;
-                }
-                let cell = match world.cell(layer, next)? {
-                    CellQuery::Loaded(cell) if cell.block.is_none() => cell,
-                    _ => continue,
-                };
-                let empty = cell.core.material == MaterialId::AIR;
-                if !empty && cell.core.material != candidate.material {
-                    continue;
-                }
-                if empty {
-                    // 活動中の空cellは相対圧0です。位置固定channelの旧値は
-                    // 物質の移動後も残るため、出口条件へ流用しません。
-                    let drive = i128::from(candidate.source_pressure)
-                        + i128::from(candidate.mass)
-                            * i128::from(candidate.config.gravity_q16)
-                            * (i128::from(next.y) - i128::from(candidate.nodes[0].0.y));
-                    if drive <= i128::from(candidate.config.threshold_q16) {
-                        continue;
-                    }
-                }
-                if candidate.nodes.len() >= candidate.config.nodes as usize {
-                    return Err(EngineError::capacity(
-                        "圧力探索のnode数",
-                        candidate.nodes.len() as u64 + 1,
-                        candidate.config.nodes.into(),
-                    ));
-                }
-                candidate.nodes.try_reserve(1).map_err(allocation)?;
-                candidate.nodes.push((next, parent as u32));
-                visited.insert(next)?;
-                if empty {
-                    candidate.goal = Some(candidate.nodes.len() as u32 - 1);
+                if self.status() != PressurePushStatus::Searching {
                     break;
                 }
+                let parent = self.cursor;
+                let point = self.nodes[parent].0;
+                for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
+                    let (Some(x), Some(y)) = (point.x.checked_add(dx), point.y.checked_add(dy))
+                    else {
+                        continue;
+                    };
+                    let next = CellPoint { x, y };
+                    if self.visited.contains(next) {
+                        continue;
+                    }
+                    if !world
+                        .chunks
+                        .get(&ChunkCoord::at(next))
+                        .is_some_and(|chunk| chunk.active)
+                    {
+                        continue;
+                    }
+                    let cell = match world.cell(layer, next)? {
+                        CellQuery::Loaded(cell) if cell.block.is_none() => cell,
+                        _ => continue,
+                    };
+                    let empty = cell.core.material == MaterialId::AIR;
+                    if !empty && cell.core.material != self.material {
+                        continue;
+                    }
+                    if empty {
+                        // 活動中の空cellは相対圧0です。位置固定channelの旧値は
+                        // 物質の移動後も残るため、出口条件へ流用しません。
+                        let drive = i128::from(self.source_pressure)
+                            + i128::from(self.mass)
+                                * i128::from(self.config.gravity_q16)
+                                * (i128::from(next.y) - i128::from(self.nodes[0].0.y));
+                        if drive <= i128::from(self.config.threshold_q16) {
+                            continue;
+                        }
+                    }
+                    if self.nodes.len() >= self.config.nodes as usize {
+                        return Err(EngineError::capacity(
+                            "圧力探索のnode数",
+                            self.nodes.len() as u64 + 1,
+                            self.config.nodes.into(),
+                        ));
+                    }
+                    self.nodes.try_reserve(1).map_err(allocation)?;
+                    self.nodes.push((next, parent as u32));
+                    self.visited.insert(next)?;
+                    self.validated_nodes += 1;
+                    if empty {
+                        self.goal = Some(self.nodes.len() as u32 - 1);
+                        break;
+                    }
+                }
+                self.cursor += 1;
             }
-            candidate.cursor += 1;
+            Ok(self.status())
+        })();
+        if result.is_err() {
+            for (point, _) in &self.nodes[previous_len..] {
+                self.visited.remove(*point);
+            }
+            self.nodes.truncate(previous_len);
+            self.cursor = previous_cursor;
+            self.goal = previous_goal;
+            self.validated_nodes = previous_validated;
         }
-        let status = candidate.status();
-        *self = candidate;
-        Ok(status)
+        result
     }
-    fn validate_inputs(&self, world: &World) -> EngineResult<()> {
-        self.validate()?;
+    fn validate_context(&self, world: &World) -> EngineResult<()> {
         if world.id != self.world {
             return Err(EngineError::new(ErrorCode::WrongScope, "圧力探索のWorld"));
         }
@@ -243,8 +275,8 @@ impl PressurePushSearch {
         {
             return Err(conflict("圧力探索の入力が変更されたため再探索が必要"));
         }
-        // codecの構造検証だけでは、外部recordが現在の地形を正しく表している保証に
-        // なりません。復元後はnodeの物質・空き先・圧力条件まで実データと照合します。
+        // codecの構造検証とは別に、実行先の物性と圧力条件を照合します。
+        // 復元後の各nodeの占有検査はstep予算内、公開前は一括で行います。
         let layer = world.content.layer_id(self.layer)?;
         let layout = world.channel_layout::<i64>(self.config.channel)?;
         if layout.x_scale.ratio() != (1, 1)
@@ -266,18 +298,6 @@ impl PressurePushSearch {
         {
             return Err(conflict("圧力探索の物性または始点圧力が不一致"));
         }
-        for (index, (point, _)) in self.nodes.iter().enumerate() {
-            let expected = if self.goal == Some(index as u32) {
-                MaterialId::AIR
-            } else {
-                self.material
-            };
-            if !matches!(world.cell(layer,*point)?,CellQuery::Loaded(cell)
-                if cell.block.is_none() && cell.core.material==expected)
-            {
-                return Err(conflict("圧力探索nodeの占有が不一致"));
-            }
-        }
         if let Some(goal) = self.goal {
             let destination = self.nodes[goal as usize].0;
             // 復元後・公開前も探索時と同じ空cellの境界条件を使います。
@@ -288,6 +308,29 @@ impl PressurePushSearch {
             if drive <= i128::from(self.config.threshold_q16) {
                 return Err(conflict("圧力探索の完成経路がdrive条件を満たさない"));
             }
+        }
+        Ok(())
+    }
+    fn validate_node(&self, world: &World, layer: LayerId, index: usize) -> EngineResult<()> {
+        let point = self.nodes[index].0;
+        let expected = if self.goal == Some(index as u32) {
+            MaterialId::AIR
+        } else {
+            self.material
+        };
+        if !matches!(world.cell(layer, point)?, CellQuery::Loaded(cell)
+            if cell.block.is_none() && cell.core.material == expected)
+        {
+            return Err(conflict("圧力探索nodeの占有が不一致"));
+        }
+        Ok(())
+    }
+    fn validate_inputs(&self, world: &World) -> EngineResult<()> {
+        self.validate_context(world)?;
+        let layer = world.content.layer_id(self.layer)?;
+        // 公開時は全経路を実地形と照合します。step予算とは別の一括取引です。
+        for index in 0..self.nodes.len() {
+            self.validate_node(world, layer, index)?;
         }
         Ok(())
     }
@@ -332,6 +375,8 @@ impl CandidateState for PressurePushSearch {
             nodes: super::terrain::copy_slice(&self.nodes)?,
             cursor: self.cursor,
             goal: self.goal,
+            visited: self.visited.try_copy()?,
+            validated_nodes: self.validated_nodes,
         })
     }
     fn validate(&self) -> EngineResult<()> {
@@ -453,6 +498,10 @@ impl StateCodec for PressurePushSearch {
         }
         let cursor = input.u32()? as usize;
         let goal = Option::<u32>::decode(input)?;
+        let mut visited = super::transport::CellReservations::for_chunks(&chunks)?;
+        for (point, _) in &nodes {
+            visited.insert(*point)?;
+        }
         let result = Self {
             world,
             content,
@@ -466,6 +515,8 @@ impl StateCodec for PressurePushSearch {
             nodes,
             cursor,
             goal,
+            visited,
+            validated_nodes: 0,
         };
         result.validate()?;
         Ok(result)
@@ -486,5 +537,195 @@ fn read_pressure(world: &World, key: StableKey, point: CellPoint) -> EngineResul
     match world.channel_value::<i64>(key, coordinate)? {
         ChannelQuery::Loaded(value) if value >= 0 => Ok(value),
         _ => Err(invalid("圧力探索の圧力値またはcoverage")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        foundation::{
+            grid::{GridLayout, GridLimits, GridScale},
+            schema::Schema,
+        },
+        world::*,
+    };
+    use std::sync::Arc;
+
+    fn key(text: &str) -> StableKey {
+        StableKey::parse(text).unwrap()
+    }
+
+    fn filled_world() -> (World, LayerId) {
+        let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
+        registry
+            .layer(LayerDef {
+                key: key("test:layer"),
+                role: LayerRole::Terrain,
+                render_order: 0,
+                collision_group: 1,
+                simulated: true,
+            })
+            .unwrap();
+        registry
+            .register(MaterialBuilder::new("test:water", MaterialBase::Liquid).unwrap())
+            .unwrap();
+        registry
+            .schema(Schema::of::<i64>(key("test:pressure-value"), 1, 8).unwrap())
+            .unwrap();
+        registry
+            .channel(ChannelDefinition {
+                key: key("test:pressure"),
+                version: 1,
+                value_schema: key("test:pressure-value"),
+                layout: GridLayout {
+                    origin: CellPoint { x: 0, y: 0 },
+                    x_scale: GridScale::new(1, 1).unwrap(),
+                    y_scale: GridScale::new(1, 1).unwrap(),
+                },
+                default: 0i64,
+                limits: GridLimits {
+                    chunks: 1,
+                    checkpoint_bytes: 100_000,
+                },
+            })
+            .unwrap();
+        let content = registry.freeze().unwrap();
+        let layer = content.layer_id(key("test:layer")).unwrap();
+        let water = content
+            .material_id(MaterialHandle(key("test:water")))
+            .unwrap();
+        let mut world = World::new(
+            WorldId::from_parts(0, 1).unwrap(),
+            0,
+            WorldBounds::expandable(),
+            Arc::clone(&content),
+            WorldLimits::default(),
+        )
+        .unwrap();
+        world
+            .edit(|edit| {
+                edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+                for y in 0..64 {
+                    for x in 0..64 {
+                        edit.set_cell(
+                            layer,
+                            CellPoint { x, y },
+                            CellCore {
+                                material: water,
+                                ..CellCore::AIR
+                            },
+                        )?;
+                    }
+                }
+                edit.acquire_lease(RegionLease {
+                    source: key("test:lease"),
+                    region: ChunkRegion::new(ChunkCoord::new(0, 0)?, 1, 1)?,
+                    mode: LeaseMode::Simulate,
+                    expires: None,
+                })
+            })
+            .unwrap();
+        (world, layer)
+    }
+    fn config(nodes: u32) -> PressurePushConfig {
+        PressurePushConfig {
+            channel: key("test:pressure"),
+            gravity_q16: 0,
+            threshold_q16: 0,
+            nodes,
+        }
+    }
+
+    #[test]
+    fn bounded_steps_keep_existing_frontier_allocation() {
+        let (world, layer) = filled_world();
+        let mut search =
+            PressurePushSearch::new(&world, layer, CellPoint { x: 32, y: 32 }, config(4096))
+                .unwrap();
+        // 容量が足りる間に既存node列を複製していないことを、時間計測なしで観測します。
+        search.nodes.try_reserve_exact(4095).unwrap();
+        let pointer = search.nodes.as_ptr();
+        for processed in 1..=200 {
+            assert_eq!(
+                search.step(&world, 1).unwrap(),
+                PressurePushStatus::Searching
+            );
+            assert_eq!(search.cursor, processed);
+            assert_eq!(search.nodes.as_ptr(), pointer);
+            assert_eq!(search.validated_nodes, search.nodes.len());
+        }
+    }
+
+    #[test]
+    fn restored_node_checks_share_the_step_budget() {
+        let (world, layer) = filled_world();
+        let mut search =
+            PressurePushSearch::new(&world, layer, CellPoint { x: 32, y: 32 }, config(4096))
+                .unwrap();
+        search.step(&world, 30).unwrap();
+        let mut out = Encoder::new(100_000);
+        search.encode(&mut out).unwrap();
+        let bytes = out.finish();
+        let mut decoder = Decoder::new(&bytes, 100_000).unwrap();
+        let mut restored = PressurePushSearch::decode(&mut decoder).unwrap();
+        assert_eq!(restored.validated_nodes, 0);
+        let previous_cursor = restored.cursor;
+        for validated in 1..=restored.nodes.len() {
+            restored.step(&world, 1).unwrap();
+            assert_eq!(restored.validated_nodes, validated);
+            assert_eq!(restored.cursor, previous_cursor);
+        }
+        let mut after = Encoder::new(100_000);
+        restored.encode(&mut after).unwrap();
+        assert_eq!(bytes, after.finish());
+        restored.step(&world, 1).unwrap();
+        search.step(&world, 1).unwrap();
+        assert_eq!(search.nodes, restored.nodes);
+        assert_eq!(search.cursor, restored.cursor);
+    }
+
+    #[test]
+    fn restored_no_outlet_waits_for_budgeted_node_checks() {
+        let (world, layer) = filled_world();
+        let mut search =
+            PressurePushSearch::new(&world, layer, CellPoint { x: 32, y: 32 }, config(4096))
+                .unwrap();
+        assert_eq!(
+            search.step(&world, 4096).unwrap(),
+            PressurePushStatus::NoOutlet
+        );
+        let mut out = Encoder::new(100_000);
+        search.encode(&mut out).unwrap();
+        let bytes = out.finish();
+        let mut input = Decoder::new(&bytes, 100_000).unwrap();
+        let mut restored = PressurePushSearch::decode(&mut input).unwrap();
+        assert_eq!(restored.status(), PressurePushStatus::Searching);
+        assert_eq!(
+            restored.step(&world, 1).unwrap(),
+            PressurePushStatus::Searching
+        );
+        assert_eq!(restored.validated_nodes, 1);
+        assert_eq!(
+            restored.step(&world, 4095).unwrap(),
+            PressurePushStatus::NoOutlet
+        );
+    }
+
+    #[test]
+    fn failed_partial_expansion_rolls_back_visited_bits_and_cursor() {
+        let (world, layer) = filled_world();
+        let source = CellPoint { x: 32, y: 32 };
+        let mut search = PressurePushSearch::new(&world, layer, source, config(3)).unwrap();
+        assert!(search.step(&world, 1).is_err());
+        assert_eq!(search.nodes, vec![(source, 0)]);
+        assert_eq!(search.cursor, 0);
+        assert_eq!(search.validated_nodes, 1);
+        search.set_node_capacity(4096).unwrap();
+        search.step(&world, 1).unwrap();
+        assert_eq!(search.nodes.len(), 5);
+        let mut fresh = PressurePushSearch::new(&world, layer, source, config(4096)).unwrap();
+        fresh.step(&world, 1).unwrap();
+        assert_eq!(search.nodes, fresh.nodes);
     }
 }

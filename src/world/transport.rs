@@ -8,7 +8,7 @@ use crate::foundation::{EngineError, EngineResult, error::allocation, grid::Cell
 
 /// 活動chunkごとの4096bit。cell数に比例したsorted Vecへの挿入を避け、
 /// 参照走査でも予約確認をchunk検索と一つのbit演算で行います。正規状態ではなく
-/// 一回の候補処理のscratchであり、sleep判定や保存stateの代わりにはしません。
+/// 参照輸送のscratchや探索の再構築可能な索引で、sleep判定や保存stateの代わりにはしません。
 pub(super) struct CellReservations(Vec<(ChunkCoord, [u64; 64])>);
 impl CellReservations {
     pub(super) fn new(world: &World) -> EngineResult<Self> {
@@ -22,6 +22,21 @@ impl CellReservations {
             }
         }
         Ok(Self(chunks))
+    }
+    pub(super) fn for_chunks(chunks: &[(ChunkCoord, u64)]) -> EngineResult<Self> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(chunks.len()).map_err(allocation)?;
+        values.extend(chunks.iter().map(|(coord, _)| (*coord, [0; 64])));
+        Ok(Self(values))
+    }
+    pub(super) fn try_copy(&self) -> EngineResult<Self> {
+        Ok(Self(super::terrain::copy_slice(&self.0)?))
+    }
+    pub(super) fn remove(&mut self, point: CellPoint) {
+        let (coord, index) = super::terrain::local(point);
+        if let Ok(chunk) = self.0.binary_search_by_key(&coord, |(coord, _)| *coord) {
+            self.0[chunk].1[index / 64] &= !(1u64 << (index % 64));
+        }
     }
     pub(super) fn contains(&self, point: CellPoint) -> bool {
         let (coord, index) = super::terrain::local(point);

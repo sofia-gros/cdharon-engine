@@ -61,3 +61,15 @@ E05全体とQ04は引き続き未完了。今回の対応は輸送・圧力の�
 - 修正後の全246テストが成功。内訳はlib/host 103、assets 24、foundation 19、material_transport 22、runtime 28、world 50。無視・失敗なし。doc-testは0件。
 - `cargo +1.98.1 fmt --all -- --check`、`cargo +1.98.1 check --all-targets --locked`、`cargo +1.98.1 clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo +1.98.1 doc --locked --no-deps`が成功。
 - ローカル差分レビューで、事前計算時に大きい値型の経路配列を複製しないよう修正した。計算用scratchはchunk座標と件数差分だけを保持する。公開API・保存形式の変更なし。
+
+### 再レビュー：探索frontierの費用
+
+`14ea27f`の再レビューで[各stepのfrontier全複製・訪問集合の再構築](https://github.com/sofia-gros/charon-engine/pull/4#discussion_r4289350740)を指摘された。同commitのCIは20件すべて成功したが、CI成功のみでレビュー対応完了とはしなかった。
+
+- 探索に訪問bitsetを保持し、各stepで既存node列を複製しない。今回の追記node・訪問bit・cursor・goal・照合cursorだけを失敗時に巻き戻す。
+- 保存recordから訪問索引を一度再構築する。復元後の各nodeの実地形照合をstep予算で進め、完了前はSearchingを返す。全体の構造検査はdecode時、全nodeの実地形照合は公開前にも行う。
+- 読込済みchunkの活動集合・入力revision照合、Vecの容量拡張、保存・復元・明示的な候補複製・公開取引の費用は残る。step予算がそれらまで一定時間に制限すると説明しない。`CHPUSH01`と公開methodの型は維持する。
+- 追加4テストで、予算1を200回進めても既存frontier配列が同じであること、復元時の照合予算、NoOutlet復元時の段階、途中の容量失敗後の訪問bit・cursorの回復を検査した。Ready復元の既存回帰テストも照合完了までstepする形へ更新した。
+- Linux / Rust 1.98.1で全250テスト成功（lib/host 107、assets 24、foundation 19、material_transport 22、runtime 28、world 50）。失敗・無視なし。fmt、全target check、警告拒否Clippy・Rustdocも成功した。
+
+E05全体・Q04の未完了と残作業は変わらない。追加commit・push後に再レビューを確認する。

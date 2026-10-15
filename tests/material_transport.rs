@@ -952,10 +952,11 @@ fn pressure_push_uses_atmospheric_outlet_despite_stale_position_pressure() {
     let mut restored = World::restore(&bytes, content, WorldLimits::default(), 4_000_000).unwrap();
     // Ready状態の再検査と公開にも同じ出口条件を適用します。
     let mut search = restored.state::<PressurePushSearch>(state_key).unwrap();
-    assert_eq!(
-        search.step(&restored, 1).unwrap(),
-        PressurePushStatus::Ready
-    );
+    assert_eq!(search.status(), PressurePushStatus::Searching);
+    while search.status() == PressurePushStatus::Searching {
+        search.step(&restored, 1).unwrap();
+    }
+    assert_eq!(search.status(), PressurePushStatus::Ready);
     restored
         .edit(|edit| edit.publish_pressure_push(&search))
         .unwrap();
