@@ -1011,3 +1011,151 @@ fn nonprogressing_same_tick_stops_at_a_deterministic_limit() {
     assert_eq!(engine.tick(), 0);
     assert_eq!(count(&engine), 0);
 }
+
+struct BarrierWriter;
+impl System for BarrierWriter {
+    fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+        let mut worlds = ctx.worlds();
+        let id = worlds.view().id("main")?;
+        let old: u64 = worlds.view().get(id, key("test:count"))?;
+        worlds.set(id, key("test:count"), key("test:number"), &(old + 1))?;
+        Ok(WorkStatus::Complete)
+    }
+}
+struct MustSkip;
+impl System for MustSkip {
+    fn run(&mut self, _: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+        panic!("非活動Systemは実行されないこと")
+    }
+}
+#[test]
+fn skipped_phase_tail_flushes_commands_for_paused_world_and_inactive_scene() {
+    for scene_skip in [false, true] {
+        for budget in [1, 64] {
+            let mut tail = SystemDescriptor::new(key("test:z-tail"), Phase::Intent);
+            tail = if scene_skip {
+                tail.in_scene(key("game:dormant"))
+            } else {
+                tail.in_world(key("game:main"))
+            };
+            let mut builder = Engine::builder().world("main", state()).work_budget(budget);
+            builder = if scene_skip {
+                builder.scene("dormant", game())
+            } else {
+                builder.scene("menu", PauseWorld).start_scene("menu")
+            };
+            let mut engine = builder
+                .system(
+                    SystemDescriptor::new(key("test:a-writer"), Phase::Intent)
+                        .write(key("test:count")),
+                    BarrierWriter,
+                )
+                .system(tail, MustSkip)
+                .system(
+                    SystemDescriptor::new(key("test:next"), Phase::Transactions)
+                        .write(key("test:count")),
+                    BarrierWriter,
+                )
+                .build()
+                .unwrap();
+            let mut progress = engine.step(TickInput::empty(1)).unwrap();
+            while matches!(progress, StepResult::Pending(_)) {
+                progress = engine.resume().unwrap();
+            }
+            // Intentの書込がTransactionsへ届けば、同じ旧値からの上書きにはなりません。
+            assert_eq!(count(&engine), 2);
+        }
+    }
+}
+#[test]
+fn world_activity_membership_cannot_hide_cross_world_record_conflicts() {
+    let result = Engine::builder()
+        .world("main", state())
+        .world("other", state())
+        .system(
+            SystemDescriptor::new(key("test:a"), Phase::Intent)
+                .write(key("test:count"))
+                .in_world(key("game:main")),
+            BarrierWriter,
+        )
+        .system(
+            SystemDescriptor::new(key("test:b"), Phase::Intent)
+                .write(key("test:count"))
+                .in_world(key("game:other")),
+            BarrierWriter,
+        )
+        .build();
+    assert!(matches!(
+        result,
+        Err(EngineError {
+            code: ErrorCode::Conflict,
+            ..
+        })
+    ));
+    // World横断操作は引き続き可能です。依存とbarrierを宣言すれば結果を順に読めます。
+    let mut engine = Engine::builder()
+        .world("main", state())
+        .world("other", state())
+        .system(
+            SystemDescriptor::new(key("test:a"), Phase::Intent)
+                .write(key("test:count"))
+                .in_world(key("game:main"))
+                .barrier(),
+            BarrierWriter,
+        )
+        .system(
+            SystemDescriptor::new(key("test:b"), Phase::Intent)
+                .write(key("test:count"))
+                .in_world(key("game:other"))
+                .after(key("test:a")),
+            BarrierWriter,
+        )
+        .build()
+        .unwrap();
+    engine.step(TickInput::empty(1)).unwrap();
+    assert_eq!(count(&engine), 2);
+}
+struct RejectConfiguration {
+    dependencies: Vec<StableKey>,
+}
+impl Plugin for RejectConfiguration {
+    fn key(&self) -> StableKey {
+        key("test:reject")
+    }
+    fn dependencies(&self) -> &[StableKey] {
+        &self.dependencies
+    }
+    fn configure(&self, _: &serde_yaml::Value) -> EngineResult<()> {
+        Err(EngineError::new(ErrorCode::InvalidValue, "設定を拒否"))
+    }
+    fn build(&self, _: &mut AppBuilder) -> EngineResult<()> {
+        panic!("configure失敗後はbuildしない")
+    }
+    fn shutdown(&self) -> EngineResult<()> {
+        panic!("build前のpluginを解放しない")
+    }
+}
+#[test]
+fn configure_failure_cleans_only_plugins_whose_build_was_started() {
+    let trace = Rc::new(RefCell::new(Vec::new()));
+    let ready = DependencyPlugin {
+        key: key("test:ready"),
+        depends: vec![],
+        trace: Rc::clone(&trace),
+        failing: false,
+    };
+    let result = Engine::builder()
+        .plugin(ready)
+        .plugin(RejectConfiguration {
+            dependencies: vec![key("test:ready")],
+        })
+        .build();
+    assert!(matches!(
+        result,
+        Err(EngineError {
+            code: ErrorCode::InvalidValue,
+            ..
+        })
+    ));
+    assert_eq!(&*trace.borrow(), &[key("test:ready"), key("test:ready")]);
+}

@@ -93,3 +93,11 @@ E04でWorld/chunkとRuntime全体の保存・再開をつなぐ。現在のWorld
 - 検査は元の作業ツリーを書き戻さず、依存cacheだけ共用する。基準revisionと差分の関係を保ち、他の作業をコミットへ混入させない。
 
 分離したコミット対象について、144件のテストに加え、全targetのcheck、警告拒否Clippy、fmt、Rustdoc、headless作例、OS window smokeも成功した。作業コピー切替時には同じpackageの古いmetadataが使われる場合があったため、元の作業ツリーの最終検査は`cargo clean --package charon-engine --target-dir target/e01-validation`でこのpackageの生成物だけを消して再構築した。依存クレートやソースは削除していない。
+
+## PR #1のレビュー指摘対応
+
+- [4281991638](https://github.com/sofia-gros/charon-engine/pull/1#discussion_r4281991638)：phase末尾がWorld pauseまたは非Running Sceneでスキップされても、共通cursor前進処理でcommandを反映します。poll予算1/64の両方で次phaseが更新後の値を読む回帰テストを追加しました。
+- [4281991653](https://github.com/sofia-gros/charon-engine/pull/1#discussion_r4281991653)：`in_world`は活動状態の所属でありアクセス先を強制しないため、異なるWorld所属を競合除外に使う処理を削除しました。World横断の操作は維持し、同じキーの競合には依存とbarrierを明示します。
+- [4281991663](https://github.com/sofia-gros/charon-engine/pull/1#discussion_r4281991663)：configure成功後、build開始直前から解放対象に含めます。設定拒否したpluginのbuild/shutdownが呼ばれず、先行pluginが解放されることを検査しました。既存の部分build失敗時の逆順解放も継続して検査します。
+
+公開Runtimeテストは24件から27件になり、27件が成功しました。今回のE02ブランチで、全147件のテスト、全target check、警告拒否Clippy、整形、Rustdocが成功しました。新しい依存や保存形式の変更はありません。
