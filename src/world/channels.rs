@@ -54,6 +54,7 @@ pub(crate) trait ChannelState: Send + Sync {
     fn extract(&self, region: ChunkRegion) -> EngineResult<Vec<u8>>;
     fn clear(&mut self, region: ChunkRegion) -> EngineResult<()>;
     fn merge(&mut self, bytes: &[u8]) -> EngineResult<()>;
+    fn transport_bytes(&self, layer: StableKey, path: &[CellPoint]) -> EngineResult<usize>;
     fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()>;
 }
 struct Factory<T: GridValue + Send + Sync + 'static>(ChannelDefinition<T>, Option<StableKey>);
@@ -148,6 +149,28 @@ impl<T: GridValue + Send + Sync + 'static> ChannelFactory for Factory<T> {
     }
 }
 impl<T: GridValue + Send + Sync + 'static> Storage<T> {
+    fn transport_coordinate(&self, point: CellPoint) -> EngineResult<CellPoint> {
+        let origin = self.grid.layout().origin;
+        Ok(CellPoint {
+            x: point
+                .x
+                .checked_sub(origin.x)
+                .ok_or_else(|| invalid("物質channel水平座標"))?,
+            y: point
+                .y
+                .checked_sub(origin.y)
+                .ok_or_else(|| invalid("物質channel垂直座標"))?,
+        })
+    }
+    fn transport_values(&self, path: &[CellPoint]) -> EngineResult<Vec<(CellPoint, T)>> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(path.len()).map_err(allocation)?;
+        for point in path {
+            let coordinate = self.transport_coordinate(*point)?;
+            values.push((coordinate, self.grid.get(coordinate)));
+        }
+        Ok(values)
+    }
     fn non_default(&self) -> impl Iterator<Item = (CellPoint, T)> + '_ {
         self.grid.batches().flat_map(move |((cx, cy), values)| {
             values
@@ -265,6 +288,53 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
         }
         Ok(())
     }
+    fn transport_bytes(&self, layer: StableKey, path: &[CellPoint]) -> EngineResult<usize> {
+        if self.definition.1 != Some(layer) {
+            return Ok(self.bytes());
+        }
+        // cell配列を新規確保する前に、各chunkの非既定値の増減だけを集計します。
+        // 経路外に残る値と、空になる旧chunkの回収を両方含めます。
+        let mut changes = Vec::new();
+        changes.try_reserve_exact(path.len()).map_err(allocation)?;
+        for (index, point) in path.iter().enumerate() {
+            let point = self.transport_coordinate(*point)?;
+            let previous =
+                self.transport_coordinate(path[(index + path.len() - 1) % path.len()])?;
+            let old = self.grid.get(point);
+            let incoming = self.grid.get(previous);
+            let delta = i64::from(!incoming.same(self.definition.0.default))
+                - i64::from(!old.same(self.definition.0.default));
+            changes.push((point.chunk_local().0, delta));
+        }
+        changes.sort_unstable_by_key(|(coordinate, _)| *coordinate);
+        let mut chunks = self.grid.allocated_chunks();
+        let mut index = 0;
+        while index < changes.len() {
+            let coordinate = changes[index].0;
+            let before = self.grid.non_default_count(coordinate);
+            let mut after = before as i64;
+            while index < changes.len() && changes[index].0 == coordinate {
+                after += changes[index].1;
+                index += 1;
+            }
+            if before == 0 && after > 0 {
+                chunks += 1;
+            } else if before > 0 && after == 0 {
+                chunks -= 1;
+            }
+        }
+        if chunks > self.definition.0.limits.chunks as usize {
+            return Err(EngineError::capacity(
+                "channel chunk数",
+                chunks as u64,
+                self.definition.0.limits.chunks.into(),
+            ));
+        }
+        chunks
+            .checked_mul(4096)
+            .and_then(|cells| cells.checked_mul(size_of::<T>()))
+            .ok_or_else(|| invalid("輸送後のchannel byte数overflow"))
+    }
     fn transport(&mut self, layer: StableKey, path: &[CellPoint]) -> EngineResult<()> {
         if self.definition.1 != Some(layer) {
             return Ok(());
@@ -272,22 +342,7 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
         // 先に旧値を全て退避し、一旦既定値へ戻してから再配置します。これにより
         // chunk上限ぴったりで別chunkへ移る場合も、不要な同時確保を要求しません。
         // 途中で失敗すれば外側のWorld候補全体が破棄されます。
-        let origin = self.grid.layout().origin;
-        let mut values = Vec::new();
-        values.try_reserve_exact(path.len()).map_err(allocation)?;
-        for point in path {
-            let coordinate = CellPoint {
-                x: point
-                    .x
-                    .checked_sub(origin.x)
-                    .ok_or_else(|| invalid("物質channel水平座標"))?,
-                y: point
-                    .y
-                    .checked_sub(origin.y)
-                    .ok_or_else(|| invalid("物質channel垂直座標"))?,
-            };
-            values.push((coordinate, self.grid.get(coordinate)));
-        }
+        let values = self.transport_values(path)?;
         for (point, _) in &values {
             self.grid.set(*point, self.definition.0.default)?;
         }

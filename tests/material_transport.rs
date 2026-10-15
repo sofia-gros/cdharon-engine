@@ -932,3 +932,160 @@ fn transport_reserves_channel_writes_and_checks_total_world_channel_bytes() {
         assert_eq!(before, world.checkpoint(4_000_000).unwrap());
     }
 }
+
+#[test]
+fn pressure_push_uses_atmospheric_outlet_despite_stale_position_pressure() {
+    let content = content(8, true);
+    let mut world = world(Arc::clone(&content));
+    let (layer, path) = pipe(&mut world);
+    // 空き先が以前高圧だった場合も、現在は大気境界として探索・公開します。
+    world
+        .edit(|edit| edit.set_channel(key("game:fluid-pressure"), path[5], i64::MAX))
+        .unwrap();
+    let mut search = PressurePushSearch::new(&world, layer, path[0], push_config(32)).unwrap();
+    assert_eq!(search.step(&world, 32).unwrap(), PressurePushStatus::Ready);
+    let state_key = key("game:pending-push");
+    world
+        .edit(|edit| edit.set_state(state_key, key("game:push-search"), &search))
+        .unwrap();
+    let bytes = world.checkpoint(4_000_000).unwrap();
+    let mut restored = World::restore(&bytes, content, WorldLimits::default(), 4_000_000).unwrap();
+    // Ready状態の再検査と公開にも同じ出口条件を適用します。
+    let mut search = restored.state::<PressurePushSearch>(state_key).unwrap();
+    assert_eq!(
+        search.step(&restored, 1).unwrap(),
+        PressurePushStatus::Ready
+    );
+    restored
+        .edit(|edit| edit.publish_pressure_push(&search))
+        .unwrap();
+    assert_eq!(
+        core(&restored, layer, path[5]).material,
+        material(&restored, "game:water").material
+    );
+}
+
+#[test]
+fn world_capacity_rejection_precedes_transport_value_writes() {
+    use charon_engine::foundation::{
+        EngineResult, ErrorCode,
+        codec::{Decoder, Encoder, StateCodec},
+        grid::GridValue,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static VALIDATIONS: AtomicUsize = AtomicUsize::new(0);
+    #[derive(Clone, Copy)]
+    struct Observed(u64);
+    impl StateCodec for Observed {
+        fn encode(&self, out: &mut Encoder) -> EngineResult<()> {
+            out.u64(self.0)
+        }
+        fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
+            Ok(Self(input.u64()?))
+        }
+    }
+    impl GridValue for Observed {
+        fn same(self, other: Self) -> bool {
+            self.0 == other.0
+        }
+        fn validate(self) -> EngineResult<()> {
+            if self.0 != 0 {
+                VALIDATIONS.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+    }
+    let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
+    registry
+        .layer(LayerDef {
+            key: key("game:front"),
+            role: LayerRole::Terrain,
+            render_order: 0,
+            collision_group: 1,
+            simulated: true,
+        })
+        .unwrap();
+    registry
+        .schema(Schema::of::<Observed>(key("game:observed"), 1, 8).unwrap())
+        .unwrap();
+    registry
+        .material_channel(
+            key("game:front"),
+            ChannelDefinition {
+                key: key("game:payload"),
+                version: 1,
+                value_schema: key("game:observed"),
+                layout: definition("game:payload", point(0, 0), 8).layout,
+                default: Observed(0),
+                limits: GridLimits {
+                    chunks: 8,
+                    checkpoint_bytes: 1_000_000,
+                },
+            },
+        )
+        .unwrap();
+    let content = registry.freeze().unwrap();
+    let layer = content.layer_id(key("game:front")).unwrap();
+    let mut world = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        3,
+        WorldBounds::expandable(),
+        content,
+        WorldLimits {
+            channel_bytes: 4096 * 8,
+            ..WorldLimits::default()
+        },
+    )
+    .unwrap();
+    world
+        .edit(|edit| {
+            edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+            edit.insert_empty_chunk(ChunkCoord::new(1, 0)?)?;
+            edit.set_channel(key("game:payload"), point(63, 2), Observed(7))?;
+            edit.set_channel(key("game:payload"), point(1, 2), Observed(9))
+        })
+        .unwrap();
+    let before = world.checkpoint(4_000_000).unwrap();
+    VALIDATIONS.store(0, Ordering::Relaxed);
+    let error = world
+        .edit(|edit| edit.exchange_cells(layer, point(63, 2), point(64, 2)))
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::CapacityExceeded);
+    // 非既定値のsetは新規配列確保前に検証します。0件なら再配置へ未到達です。
+    assert_eq!(VALIDATIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+}
+
+#[test]
+fn transport_reuses_bytes_freed_by_another_material_channel() {
+    let content = content(8, true);
+    let layer = content.layer_id(key("game:front")).unwrap();
+    let mut world = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        3,
+        WorldBounds::expandable(),
+        content,
+        WorldLimits {
+            channel_bytes: 3 * 4096 * 8,
+            ..WorldLimits::default()
+        },
+    )
+    .unwrap();
+    world
+        .edit(|edit| {
+            edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+            edit.insert_empty_chunk(ChunkCoord::new(1, 0)?)?;
+            edit.set_channel(key("game:energy"), point(63, 2), 7u64)?;
+            edit.set_channel(key("game:energy"), point(3, 2), 9u64)?;
+            edit.set_channel(key("game:timer"), point(65, 2), 11u64)?;
+            edit.set_channel(key("game:timer"), point(3, 2), 13u64)
+        })
+        .unwrap();
+    // energyは1→2chunk、timerは2→1chunk。途中もWorld上限を超えず再配置します。
+    world
+        .edit(|edit| edit.transport_path(layer, &[point(61, 2), point(62, 2), point(63, 2)]))
+        .unwrap();
+    assert_eq!(world.channel_bytes(), 3 * 4096 * 8);
+    assert_eq!(value(&world, "game:energy", point(64, 2)), 7);
+    assert_eq!(value(&world, "game:timer", point(63, 2)), 11);
+}

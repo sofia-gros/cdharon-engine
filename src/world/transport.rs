@@ -4,7 +4,7 @@
 //! 未読込区域を空きとみなしたり、block個体をcellだけに分解したりしません。
 
 use super::{ChunkCoord, LayerId, World, WorldEdit, conflict, invalid};
-use crate::foundation::{EngineResult, error::allocation, grid::CellPoint};
+use crate::foundation::{EngineError, EngineResult, error::allocation, grid::CellPoint};
 
 /// 活動chunkごとの4096bit。cell数に比例したsorted Vecへの挿入を避け、
 /// 参照走査でも予約確認をchunk検索と一つのbit演算で行います。正規状態ではなく
@@ -104,8 +104,30 @@ impl WorldEdit<'_> {
                 }
                 cores.push(cell.core);
             }
-            for channel in &mut editor.world.channels {
-                channel.transport(layer_key, path)?;
+            // 全channelの最終容量を先に検査します。縮むchannelから処理すると、
+            // 途中の総確保量も開始時と終了時の最大値を超えません。
+            let mut plans = Vec::new();
+            plans
+                .try_reserve_exact(editor.world.channels.len())
+                .map_err(allocation)?;
+            let mut required = 0usize;
+            for (index, channel) in editor.world.channels.iter().enumerate() {
+                let bytes = channel.transport_bytes(layer_key, path)?;
+                required = required
+                    .checked_add(bytes)
+                    .ok_or_else(|| invalid("輸送後のchannel byte数overflow"))?;
+                plans.push((bytes > channel.bytes(), index));
+            }
+            if required > editor.world.limits.channel_bytes {
+                return Err(EngineError::capacity(
+                    "channel byte数",
+                    required as u64,
+                    editor.world.limits.channel_bytes as u64,
+                ));
+            }
+            plans.sort_unstable();
+            for (_, index) in plans {
+                editor.world.channels[index].transport(layer_key, path)?;
             }
             // 各始点の旧値はcoresに保持済みです。途中の上書きで元の値を失わず、
             // 一時的な二重占有も候補の外へ公開しません。

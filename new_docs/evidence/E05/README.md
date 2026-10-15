@@ -43,3 +43,21 @@ APIの契約・容量費用・未対応範囲は[30_MATERIAL_TRANSPORT](../../30
 ## 残作業
 
 [30の残作業](../../30_MATERIAL_TRANSPORT.md#e05の残作業)を実装・検証する。今回の変更はE05内の「輸送と圧力」のレビュー単位であり、E05全体の完了を示さない。この単位をcommit/push・PR・外部レビュー待機・指摘対応まで進め、続いてE05内の残りの実装を行う。E05の出口条件を小さく定義し直さず、未達を残してE06へ進まない。
+
+## PR #4の外部レビュー対応
+
+2026-10-16、Linuxクラウド環境・Rust 1.98.1。レビュー対象は`da0159149ec17504ecfacc27428b957bcc5568ae`。そのcommitのRust CIとE03/E04/E05のWindows・Ubuntu・macOS検査はすべて成功していることをGitHubで確認した。
+
+- [空cellの出口圧](https://github.com/sofia-gros/charon-engine/pull/4#discussion_r4289087672)：探索とReady経路の復元後再検査・公開で、空cellの相対圧を0とする。位置固定channelに`i64::MAX`が残る出口の保存・復元・公開を回帰対象に追加。
+- [channel確保前の容量検査](https://github.com/sofia-gros/charon-engine/pull/4#discussion_r4289087685)：全channelの輸送後の非既定値数から必要配列数を事前計算する。全体上限と個別上限を検査し、容量が減るchannelから輸送する。経路外の値が残る移動で、容量拒否が非既定値の再配置前に起きることを値の検証callbackで観測する。別channelの解放容量を再利用する取引も追加。
+
+E05全体とQ04は引き続き未完了。今回の対応は輸送・圧力のレビュー修正単位に限る。
+
+### レビュー修正のローカル検証
+
+`CARGO_HOME=/workspace/.cargo`、`RUSTUP_HOME=/workspace/.rustup`、`CARGO_BUILD_JOBS=2`を設定し、リポジトリ直下からRust 1.98.1で実行した。
+
+- 空出口圧と確保前容量拒否の追加テストは、修正前の実装でそれぞれ`NoOutlet`誤判定と非既定値の再配置への到達により失敗することを確認した。
+- 修正後の全246テストが成功。内訳はlib/host 103、assets 24、foundation 19、material_transport 22、runtime 28、world 50。無視・失敗なし。doc-testは0件。
+- `cargo +1.98.1 fmt --all -- --check`、`cargo +1.98.1 check --all-targets --locked`、`cargo +1.98.1 clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo +1.98.1 doc --locked --no-deps`が成功。
+- ローカル差分レビューで、事前計算時に大きい値型の経路配列を複製しないよう修正した。計算用scratchはchunk座標と件数差分だけを保持する。公開API・保存形式の変更なし。

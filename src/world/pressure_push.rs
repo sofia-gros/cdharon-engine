@@ -195,8 +195,9 @@ impl PressurePushSearch {
                     continue;
                 }
                 if empty {
-                    let pressure = read_pressure(world, candidate.config.channel, next)?;
-                    let drive = i128::from(candidate.source_pressure) - i128::from(pressure)
+                    // 活動中の空cellは相対圧0です。位置固定channelの旧値は
+                    // 物質の移動後も残るため、出口条件へ流用しません。
+                    let drive = i128::from(candidate.source_pressure)
                         + i128::from(candidate.mass)
                             * i128::from(candidate.config.gravity_q16)
                             * (i128::from(next.y) - i128::from(candidate.nodes[0].0.y));
@@ -279,8 +280,8 @@ impl PressurePushSearch {
         }
         if let Some(goal) = self.goal {
             let destination = self.nodes[goal as usize].0;
+            // 復元後・公開前も探索時と同じ空cellの境界条件を使います。
             let drive = i128::from(self.source_pressure)
-                - i128::from(read_pressure(world, self.config.channel, destination)?)
                 + i128::from(self.mass)
                     * i128::from(self.config.gravity_q16)
                     * (i128::from(destination.y) - i128::from(self.nodes[0].0.y));

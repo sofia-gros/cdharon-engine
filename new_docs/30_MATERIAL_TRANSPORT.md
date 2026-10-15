@@ -21,7 +21,7 @@ E05は実装中。このページは追加した輸送・局所移動・圧力�
 
 CellCoreのflags・variationと、そのlayerの全物質channelを同じ取引で輸送する。呼出側が移すchannelを列挙する必要はなく、選択漏れを防ぐ。経路の全点について読込、境界、重複、隣接、block個体、通常編集予算を検査する。編集予約数は`経路cell数 × (所属する物質channel数 + 1)`で、地形だけを数えてchannelの費用を隠さない。block個体は暗黙に分解しない。斜め隣接を許すが、形状による通過可否はsolverが判定する。
 
-channelの旧値を退避してから対象点を既定値へ戻し、再配置する。これにより、一つしかchannel chunkを確保できない場合も、空になったchunkを解放して移動先を確保できる。他の値が残っていて容量が足りなければ失敗する。失敗をcallbackが無視しても、外側のWorld取引は地形・channel・先行編集をまとめて破棄する。
+channelの旧値を退避してから対象点を既定値へ戻し、再配置する。これにより、一つしかchannel chunkを確保できない場合も、空になったchunkを解放して移動先を確保できる。全channelについて輸送後に残る非既定値数と必要chunk数・byte数を配列確保前に計算し、World全体とchannel個別の上限を検査する。容量を解放するchannelから処理し、一時的な確保量もWorld上限を超えない。他の値が残っていて容量が足りなければ失敗する。失敗をcallbackが無視しても、外側のWorld取引は地形・channel・先行編集をまとめて破棄する。
 
 保存形式の構造は変更していない。所有権はContent manifestに含まれ、位置固定と物質追従を互換と誤認しない。通常channelだけの既存manifestは維持する。channel値は既存のcheckpoint・区域退避・復帰に従う。
 
@@ -50,7 +50,7 @@ channelの旧値を退避してから対象点を既定値へ戻し、再配置�
 
 ## 満杯経路の押出し
 
-`PressurePushSearch::new`で流体始点と圧力条件、node容量を指定する。`step(world, budget)`で最大budget nodeの四近傍を上・左・右・下の固定順に調べる。同じ素材の活動cellを通過し、空き先との圧力差と重力項が閾値を超えた経路をReadyとする。
+`PressurePushSearch::new`で流体始点と圧力条件、node容量を指定する。`step(world, budget)`で最大budget nodeの四近傍を上・左・右・下の固定順に調べる。同じ素材の活動cellを通過し、空き先との圧力差と重力項が閾値を超えた経路をReadyとする。活動中の空cellは相対圧0として扱い、位置固定channelに残った旧圧力値を使わない。保存から復元したReady経路の再検査・公開にも同じ境界条件を適用する。
 
 Searching、Ready、NoOutletを区別する。容量不足はエラーであり、NoOutletへ丸めない。step失敗時はcursorとfrontierも変更しない。`set_node_capacity`で上限を増やして同じfrontierから再開できるが、StateStoreのrecord byte上限は独立して残る。World ID、Content、material epoch、入力した全活動chunkのrevisionと活動集合を照合する。失効時は古い経路を使わず再探索する。復元recordは親node・隣接・重複・所属領域だけでなく、再開・公開時に実際の物質・空き先・driveも再確認する。
 
