@@ -115,6 +115,9 @@ pub trait GenerationStorage {
     fn publish_current(&mut self, generation: u64) -> EngineResult<()>;
     /// 自身が管理する古い公開世代だけを削除します。
     fn remove(&mut self, generation: u64) -> EngineResult<()>;
+    /// 自身が管理する未公開世代だけを破棄します。公開済み世代を削除してはいけません。
+    /// writer lockの下で次の保存を始める前に呼ばれ、中断した書込のslotを回収します。
+    fn discard_staged(&mut self, generation: u64) -> EngineResult<()>;
 }
 /// 保存成功のreceipt。新rootの検証とCURRENT更新が済んだ時だけ返します。
 pub struct SaveReceipt {
@@ -211,6 +214,31 @@ impl<S: GenerationStorage> SaveRepository<S> {
                 .unwrap_or(0)
                 .checked_add(1)
                 .ok_or_else(|| invalid("保存世代の上限"))?;
+            // 他のwriterが作業中の候補には触れません。排他lock取得後の未公開世代は
+            // 中断したstagingです。番号を先に決めてから回収し、新規世代のslotを空けます。
+            for generation in &generations {
+                if !generation.published {
+                    self.storage.discard_staged(generation.number)?;
+                }
+            }
+            let mut occupied = generations
+                .iter()
+                .filter(|generation| generation.published)
+                .count();
+            if occupied >= self.limits.generations {
+                // CURRENT更新・前回の整理だけが失敗した場合は、完全な余剰世代を検証して
+                // から整理します。壊れた公開世代を勝手に削除して空きを作りません。
+                occupied = self.prune_published(generations)?;
+            }
+            if occupied >= self.limits.generations {
+                // 上限を超える第五世代を作る前に拒否します。失敗後も既存rootの列挙と
+                // loadを継続でき、作者は容量設定や回復手順を明示的に選べます。
+                return Err(EngineError::capacity(
+                    "新保存世代の空きslot",
+                    occupied.saturating_add(1) as u64,
+                    self.limits.generations as u64,
+                ));
+            }
             self.storage.begin(next)?;
             let mut entries = Vec::new();
             let mut total = 0usize;
@@ -261,19 +289,8 @@ impl<S: GenerationStorage> SaveRepository<S> {
                 cleanup_errors: Vec::new(),
             };
             let cleanup = (|| {
-                let mut generations = self.storage.generations(self.limits.generations)?;
-                generations.retain(|value| value.published);
-                generations.sort_by_key(|value| std::cmp::Reverse(value.number));
-                let mut valid = 0usize;
-                for generation in generations {
-                    // 壊れた世代を有効なbackupとして数えません。壊れたものも勝手に削除しません。
-                    if self.verify_generation(generation.number).is_ok() {
-                        valid += 1;
-                        if valid > self.keep {
-                            self.storage.remove(generation.number)?;
-                        }
-                    }
-                }
+                let generations = self.storage.generations(self.limits.generations)?;
+                self.prune_published(generations)?;
                 Ok(())
             })();
             if let Err(error) = cleanup {
@@ -286,6 +303,24 @@ impl<S: GenerationStorage> SaveRepository<S> {
             Ok(result) => result,
             Err(panic) => std::panic::resume_unwind(panic),
         }
+    }
+    // 新しい完全rootから順にkeep個を残します。開始前の容量予約と公開後の整理が
+    // 同じ判定を使い、破損rootを有効なbackupとして数えないようにします。
+    fn prune_published(&mut self, mut generations: Vec<SaveGeneration>) -> EngineResult<usize> {
+        generations.retain(|generation| generation.published);
+        generations.sort_by_key(|generation| std::cmp::Reverse(generation.number));
+        let mut retained = generations.len();
+        let mut valid = 0usize;
+        for generation in generations {
+            if self.verify_generation(generation.number).is_ok() {
+                valid += 1;
+                if valid > self.keep {
+                    self.storage.remove(generation.number)?;
+                    retained -= 1;
+                }
+            }
+        }
+        Ok(retained)
     }
     /// 世代整理と競合しない読込区間。複数payloadを順に読む間は同じ保存先のwriterを排除します。
     pub fn read_transaction<R>(
@@ -639,6 +674,34 @@ impl DirectoryStorage {
         Ok(path)
     }
 }
+impl DirectoryStorage {
+    // checked_directoryでcanonical root直下の実体directoryを確認し、既知objectだけを
+    // 削除します。staging回収でも、公開世代や作者が置いた未知fileへ範囲を広げません。
+    fn remove_directory(&mut self, generation: u64, staged: bool) -> EngineResult<()> {
+        self.require_writer()?;
+        let path = self.checked_directory(generation, staged)?;
+        for entry in fs::read_dir(&path).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            let metadata = entry.file_type().map_err(io)?;
+            let name = entry.file_name();
+            let known = name.to_str().is_some_and(|name| {
+                name == "root.bin"
+                    || name.strip_suffix(".blob").is_some_and(|hash| {
+                        hash.len() == 64
+                            && hash
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+            });
+            if !metadata.is_file() || metadata.is_symlink() || !known {
+                return Err(invalid("保存世代内の未知object・directory・link"));
+            }
+        }
+        fs::remove_dir_all(path).map_err(io)?;
+        sync_directory(&self.root)?;
+        Ok(())
+    }
+}
 impl GenerationStorage for DirectoryStorage {
     fn lock(&mut self) -> EngineResult<()> {
         if self.writer.is_some() {
@@ -770,19 +833,10 @@ impl GenerationStorage for DirectoryStorage {
         Ok(())
     }
     fn remove(&mut self, generation: u64) -> EngineResult<()> {
-        self.require_writer()?;
-        let path = self.checked_directory(generation, false)?;
-        // computed pathはcanonical rootの直下と確認済みです。リンクを辿った再帰削除はしません。
-        for entry in fs::read_dir(&path).map_err(io)? {
-            let entry = entry.map_err(io)?;
-            let metadata = entry.file_type().map_err(io)?;
-            if !metadata.is_file() || metadata.is_symlink() {
-                return Err(invalid("保存世代内の未知directory・link"));
-            }
-        }
-        fs::remove_dir_all(path).map_err(io)?;
-        sync_directory(&self.root)?;
-        Ok(())
+        self.remove_directory(generation, false)
+    }
+    fn discard_staged(&mut self, generation: u64) -> EngineResult<()> {
+        self.remove_directory(generation, true)
     }
 }
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> EngineResult<Vec<u8>> {

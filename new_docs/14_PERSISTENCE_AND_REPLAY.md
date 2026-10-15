@@ -19,7 +19,7 @@ blobの基本headerはmagic、record kind、schema major/minor、展開後長、
 ## 書き込み手順
 
 1. tick境界のSnapshotを取得する。基準実装は停止Snapshotを持ち、通常保存は参照count付きページのcopy-on-writeでworkerへ渡す。
-2. dirty blobを同一保存volumeのtemporary世代へ書き、長さとchecksumを検証する。
+2. 排他writer lockの下で中断した未公開temporary世代を安全に回収し、新世代用の容量を確保する。公開済み世代や未知fileは回収に含めない。dirty blobを同一保存volumeの新しいtemporary世代へ書き、長さとchecksumを検証する。
 3. payloadをflush/syncし、必要なroot manifestを最後に書いてsyncする。
 4. 世代をpublishし、CURRENT pointerを同一directoryで置き換える。対象OSのdirectory durability手順をadapterで実施する。
 5. 新世代を検証できた後にのみ旧世代を整理し、最低3世代を保持する。

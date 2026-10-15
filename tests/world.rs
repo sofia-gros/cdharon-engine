@@ -988,6 +988,10 @@ impl GenerationStorage for FaultStorage {
         self.check()?;
         self.inner.remove(generation)
     }
+    fn discard_staged(&mut self, generation: u64) -> EngineResult<()> {
+        self.check()?;
+        self.inner.discard_staged(generation)
+    }
 }
 #[test]
 fn immutable_save_generations_keep_three_valid_backups_and_ignore_broken_current() {
@@ -2650,4 +2654,273 @@ fn block_remap_rejects_changed_shapes_before_any_instance_or_archive_is_modified
             assert_eq!(world.checkpoint(2_000_000).unwrap(), before);
         }
     }
+}
+
+#[test]
+fn interrupted_staging_is_reclaimed_with_the_minimum_generation_budget() {
+    for mode in 0..6 {
+        let directory = SaveDirectory::new();
+        let limits = SaveLimits {
+            generations: 4,
+            ..SaveLimits::default()
+        };
+        let mut repository = SaveRepository::new(
+            FaultStorage {
+                inner: DirectoryStorage::new(&directory.0).unwrap(),
+                count: 0,
+                fail: None,
+                partial: false,
+            },
+            limits,
+            3,
+        )
+        .unwrap();
+        for tick in 1..=3 {
+            repository.save(&metadata(tick), records(tick)).unwrap();
+        }
+        repository.storage_mut().count = 0;
+        match mode {
+            0 => {
+                let stream = std::iter::once(Err(charon_engine::foundation::EngineError::new(
+                    ErrorCode::Io,
+                    "reader中断",
+                )));
+                assert!(repository.save_stream(&metadata(4), stream).is_err());
+            }
+            1 => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let stream = std::iter::from_fn(|| -> Option<EngineResult<SaveRecord>> {
+                        panic!("reader中断")
+                    });
+                    let _ = repository.save_stream(&metadata(4), stream);
+                }));
+                assert!(result.is_err());
+            }
+            2 => {
+                repository.storage_mut().partial = true;
+                assert!(repository.save(&metadata(4), records(4)).is_err());
+            }
+            _ => {
+                // lock・列挙・beginに続くblob/root/syncの各失敗を検査します。
+                repository.storage_mut().fail = Some(mode + 1);
+                assert!(repository.save(&metadata(4), records(4)).is_err());
+            }
+        }
+        repository.storage_mut().fail = None;
+        assert_eq!(repository.load_latest().unwrap().metadata.tick, 3);
+        assert_eq!(repository.storage_mut().generations(4).unwrap().len(), 4);
+        if mode == 0 {
+            // 回収自体が失敗しても新しい世代を作らず、直前の完全rootを読み続けます。
+            repository.storage_mut().count = 0;
+            repository.storage_mut().fail = Some(3);
+            assert!(repository.save(&metadata(5), records(5)).is_err());
+            repository.storage_mut().fail = None;
+            assert_eq!(repository.storage_mut().generations(4).unwrap().len(), 4);
+            assert_eq!(repository.load_latest().unwrap().metadata.tick, 3);
+        }
+        drop(repository);
+        // 保存先を開き直しても未公開世代を識別でき、上限を増やさず継続します。
+        let mut restarted =
+            SaveRepository::new(DirectoryStorage::new(&directory.0).unwrap(), limits, 3).unwrap();
+        for tick in 5..=9 {
+            let receipt = restarted.save(&metadata(tick), records(tick)).unwrap();
+            assert!(receipt.cleanup_errors.is_empty());
+            assert_eq!(receipt.generation, tick);
+            assert_eq!(restarted.load_latest().unwrap().metadata.tick, tick);
+            let generations = restarted.storage_mut().generations(4).unwrap();
+            assert_eq!(generations.len(), 3);
+            assert!(generations.iter().all(|generation| generation.published));
+        }
+    }
+}
+
+#[test]
+fn staging_reclamation_requires_a_lock_and_preserves_published_and_unknown_files() {
+    let directory = SaveDirectory::new();
+    let mut repository = SaveRepository::new(
+        DirectoryStorage::new(&directory.0).unwrap(),
+        SaveLimits {
+            generations: 4,
+            ..SaveLimits::default()
+        },
+        3,
+    )
+    .unwrap();
+    for tick in 1..=3 {
+        repository.save(&metadata(tick), records(tick)).unwrap();
+    }
+    assert_eq!(
+        repository.storage_mut().discard_staged(3).unwrap_err().code,
+        ErrorCode::InvalidState
+    );
+    repository.storage_mut().lock().unwrap();
+    assert!(repository.storage_mut().discard_staged(3).is_err());
+    repository.storage_mut().begin(4).unwrap();
+    repository.storage_mut().unlock();
+    let unknown = directory
+        .0
+        .join("gen-00000000000000000004.tmp")
+        .join("creator-note.txt");
+    std::fs::write(&unknown, b"preserve").unwrap();
+    assert_eq!(
+        repository
+            .save(&metadata(5), records(5))
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::InvalidValue
+    );
+    assert_eq!(std::fs::read(&unknown).unwrap(), b"preserve");
+    assert_eq!(repository.load_latest().unwrap().metadata.tick, 3);
+    assert_eq!(repository.storage_mut().generations(4).unwrap().len(), 4);
+}
+
+#[test]
+fn runtime_terrain_callbacks_cannot_advance_owned_clocks_even_when_paused() {
+    use charon_engine::runtime::{
+        Engine, Scene, SceneContext,
+        input::TickInput,
+        schedule::{Phase, System, SystemContext, SystemDescriptor, WorkStatus},
+    };
+    struct ClockWriter;
+    impl System for ClockWriter {
+        fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+            let mut worlds = ctx.worlds();
+            let id = worlds.view().id("world")?;
+            worlds.set(id, key("game:progress"), key("game:number"), &99u32)?;
+            worlds.edit_terrain(id, |edit| edit.advance_tick())?;
+            Ok(WorkStatus::Complete)
+        }
+    }
+    struct Pause;
+    impl Scene for Pause {
+        fn start(&mut self, ctx: &mut SceneContext<'_>) -> EngineResult<()> {
+            let mut worlds = ctx.worlds();
+            let id = worlds.view().id("world")?;
+            worlds.pause(id, true)
+        }
+    }
+    for initial_tick in [0, 3] {
+        for paused in [false, true] {
+            let native = WorldBuilder::new(state_content()).initialize(move |world| {
+                world.edit(|edit| {
+                    edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+                    edit.set_state(key("game:progress"), key("game:number"), &7u32)?;
+                    // Runtimeへ登録する前は作者が初期Worldの時計を構成できます。
+                    for _ in 0..initial_tick {
+                        edit.advance_tick()?;
+                    }
+                    Ok(())
+                })
+            });
+            let mut builder = Engine::builder().sandbox_world("world", native).system(
+                SystemDescriptor::new(key("game:clock-writer"), Phase::Intent)
+                    .write(key("game:progress"))
+                    .write(key("engine:terrain"))
+                    .barrier(),
+                ClockWriter,
+            );
+            if paused {
+                builder = builder.scene("pause", Pause).start_scene("pause");
+            }
+            let mut engine = builder.build().unwrap();
+            let id = engine.worlds().id("world").unwrap();
+            let before = engine.worlds().checkpoint(id).unwrap();
+            let error = engine.step(TickInput::empty(1)).unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidState);
+            assert_eq!(engine.tick(), 0);
+            assert_eq!(engine.worlds().tick(id).unwrap(), initial_tick);
+            assert_eq!(engine.worlds().terrain(id).unwrap().tick(), initial_tick);
+            assert_eq!(
+                engine
+                    .worlds()
+                    .get::<u32>(id, key("game:progress"))
+                    .unwrap(),
+                7
+            );
+            assert_eq!(engine.worlds().checkpoint(id).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn a_failed_current_update_can_reclaim_valid_surplus_before_the_next_save() {
+    let directory = SaveDirectory::new();
+    let mut repository = SaveRepository::new(
+        FaultStorage {
+            inner: DirectoryStorage::new(&directory.0).unwrap(),
+            count: 0,
+            fail: None,
+            partial: false,
+        },
+        SaveLimits {
+            generations: 4,
+            ..SaveLimits::default()
+        },
+        3,
+    )
+    .unwrap();
+    for tick in 1..=3 {
+        repository.save(&metadata(tick), records(tick)).unwrap();
+    }
+    repository.storage_mut().count = 0;
+    // lock/列挙/begin、blob/root/sync/publish、再読込2回の次がCURRENT更新です。
+    // root公開後の失敗を作り、四つの有効世代から安全に保存を継続できるか検査します。
+    repository.storage_mut().fail = Some(10);
+    assert!(repository.save(&metadata(4), records(4)).is_err());
+    repository.storage_mut().fail = None;
+    assert_eq!(repository.load_latest().unwrap().metadata.tick, 4);
+    assert_eq!(repository.storage_mut().generations(4).unwrap().len(), 4);
+    let receipt = repository.save(&metadata(5), records(5)).unwrap();
+    assert_eq!(receipt.generation, 5);
+    assert!(receipt.cleanup_errors.is_empty());
+    assert_eq!(repository.storage_mut().generations(4).unwrap().len(), 3);
+    assert_eq!(repository.load_latest().unwrap().metadata.tick, 5);
+}
+
+#[test]
+fn corrupt_published_generations_cannot_overflow_the_budget_and_disable_loading() {
+    let directory = SaveDirectory::new();
+    let limits = SaveLimits {
+        generations: 4,
+        ..SaveLimits::default()
+    };
+    let mut repository =
+        SaveRepository::new(DirectoryStorage::new(&directory.0).unwrap(), limits, 3).unwrap();
+    for tick in 1..=3 {
+        repository.save(&metadata(tick), records(tick)).unwrap();
+    }
+    repository.storage_mut().lock().unwrap();
+    repository.storage_mut().begin(4).unwrap();
+    repository
+        .storage_mut()
+        .write_staged(4, SaveObject::Root, b"broken-root")
+        .unwrap();
+    repository.storage_mut().sync_staged(4).unwrap();
+    repository.storage_mut().publish(4).unwrap();
+    repository.storage_mut().unlock();
+    assert_eq!(
+        repository
+            .save(&metadata(5), records(5))
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::CapacityExceeded
+    );
+    assert_eq!(repository.storage_mut().generations(4).unwrap().len(), 4);
+    assert_eq!(repository.load_latest().unwrap().metadata.tick, 3);
+    // 破損rootは保全したまま、作者が明示的に予算を増やして保存を再開できます。
+    drop(repository);
+    let mut expanded = SaveRepository::new(
+        DirectoryStorage::new(&directory.0).unwrap(),
+        SaveLimits {
+            generations: 5,
+            ..limits
+        },
+        3,
+    )
+    .unwrap();
+    expanded.save(&metadata(5), records(5)).unwrap();
+    assert_eq!(expanded.load_latest().unwrap().metadata.tick, 5);
+    assert_eq!(expanded.storage_mut().generations(5).unwrap().len(), 4);
 }

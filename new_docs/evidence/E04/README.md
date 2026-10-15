@@ -86,3 +86,16 @@ E02のPR #1は`eed1973`、E03のPR #2は`fb48f64`でmainへマージ済みです
 | [4284739985](https://github.com/sofia-gros/charon-engine/pull/3#discussion_r4284739985)：同寸法の形状変更remapが通る | 寸法に加え形状定義を登録時に照合。未配置・resident・退避中、Platform/Full/同じ占有maskで異なる定義を検査し、失敗時のepochとsnapshotを保持。休止個体も変換列の最終形状を検査 |
 
 Worldテストは45件、全体は219件です。全target check、整形、警告拒否Clippy、Rustdocが成功しました。新規依存と保存codecの変更はありません。未来tickの採用条件、保存設定、標準remapの制約を公開API資料へ反映しました。
+
+## PR #3の再レビュー指摘対応
+
+`65575da`への再レビューで追加された2件も修正しました。
+
+- [4284897115](https://github.com/sofia-gros/charon-engine/pull/3#discussion_r4284897115)：`GenerationStorage::discard_staged`を追加し、排他lock取得後、新世代を作る前に中断した未公開世代を回収します。ローカルadapterは保存root直下と既知objectを確認し、公開済み世代・未知file・linkを削除しません。readerエラー/panic、部分write、blob/root/sync失敗、回収失敗、再起動を最小世代予算で検査しました。CURRENT更新失敗による有効な余剰世代も安全に整理します。破損rootで空きが作れない場合は、上限超過の世代を作らず容量エラーとし、既存rootの読込を維持します。
+- [4284897134](https://github.com/sofia-gros/charon-engine/pull/3#discussion_r4284897134)：Runtimeが地形callback適用前後とtick確定前に時計の一致を確認します。callbackによる時計前進はpause中も拒否し、先行する作者状態の書込と共に候補を破棄します。Worldの初期tick 0/3、pause有無の4通りで、Engine/World両時計と保存snapshotの不変を検査しました。
+
+新たな回帰検査を含めWorld 50件、全体224件のテストが成功しました。整形、全target check、警告拒否Clippyが成功しています。Rustdocと統合作例も成功しました。
+
+公開保存adapterのAPIに`discard_staged`が加わります。独自adapterは未公開世代だけを回収する実装が必要です。保存codecと依存crateの変更はありません。
+
+最初の全体検査はCドライブの一時領域不足によりMSVC linkerの書込が失敗しました。その実行を成功へ数えず、検査プロセスのTEMP/TMPだけを`A:/Project/charon-engine/target/e04-build-tmp`へ切り替えて再実行しました。エンジン設定やユーザーの永続環境設定は変更していません。

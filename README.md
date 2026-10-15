@@ -26,7 +26,7 @@ Fabric APIのような機能へのアクセスと拡張性、Phaserのような�
 
 E03の初回実装は全168件のテスト、整形、全ターゲットのコンパイル、警告拒否Clippy、Rustdocを通過しました。同じ資産packの読込とCPU参照描画はWindows・Ubuntu・macOSで、実ウィンドウのGPU表示はWindowsのVulkan / GeForce RTX 4060で確認しています。検証対象のコミットとCIへのリンクはE03の記録にあります。
 
-E2・E3とE4のPR指摘対応を取り込んだE04は、旧変更を含まないツリーの全219件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
+E2・E3とE4のPR指摘対応を取り込んだE04は、旧変更を含まないツリーの全224件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
 
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
@@ -100,3 +100,5 @@ PR #1のRuntime指摘も反映し、非活動Systemのphase境界、World横断r
 PR #2のポインター指摘に対応し、HiDPI・resize後も論理frame座標を使用します。余白やwindow外へ出たpointerは無効化し、他の入力状態は維持します。詳細は[E03の記録](new_docs/evidence/E03/README.md)を参照してください。
 
 E4のPRレビューで、次tickの生成採用・保存世代の列挙容量・blockの形状変更remapを修正し、回帰検査を追加しています。
+
+E4の再レビューでは、一時保存世代の回収とRuntimeの地形時計の所有権も修正しました。保存中断・再起動と、pause中を含む時計不一致の回帰検査を追加しています。

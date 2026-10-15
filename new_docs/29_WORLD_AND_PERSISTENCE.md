@@ -72,7 +72,7 @@ worker再開には`restart_generation`を使います。要求IDの世代に加�
 
 `CHSAVE01`の世代rootにはengine版、profile、content hash、tick、plugin key/version、scope、kind、codec版、長さ、blob hashを記録します。`CHBLOB01`はkind、形式major/minor、codec版、展開後長、圧縮方式、payload checksumを持ちます。現在の圧縮方式はnoneで、未知方式を無視しません。BLAKE3はcontent/blob照合用です。既存の資産packのSHA-256は変更していません。
 
-`SaveRepository`と`GenerationStorage`は保存媒体を分離します。ローカルadapterはwriter lock、temporary世代、file同期、不変世代の公開、root再検証、CURRENT更新、最低3有効世代の保持を行います。`SaveLimits::generations`は保持数keepより大きい値を要求し、新世代を検証してから整理するための最低1世代分を予約します。壊れた世代や一時世代も列挙上限へ数えるので、運用時は追加の余裕を設定します。CURRENTが壊れても世代一覧から最後の完全rootを選べます。保存streamが失敗・panicした場合もlockを解放し、不完全なrootを公開しません。
+`SaveRepository`と`GenerationStorage`は保存媒体を分離します。ローカルadapterはwriter lock、temporary世代、file同期、不変世代の公開、root再検証、CURRENT更新、最低3有効世代の保持を行います。`SaveLimits::generations`は保持数keepより大きい値を要求し、新世代を検証してから整理するための最低1世代分を予約します。壊れた世代や一時世代も列挙上限へ数えるので、運用時は追加の余裕を設定します。新しい保存を始める前に、排他lockの下で中断した未公開世代を`GenerationStorage::discard_staged`により回収します。ローカルadapterはcanonical root直下のstagingと既知のobjectだけを削除し、公開済み世代・未知file・linkは削除しません。回収に失敗したら新世代を作らず、直前の公開rootを維持します。独自保存adapterもこの追加methodを実装します。CURRENT更新や旧世代整理だけが失敗して有効な公開世代が余っている場合は、完全性を再検証してkeep個を残してから次を作ります。破損した公開世代は保全し、空きを確保できなければ新規世代を作る前に容量エラーを返して既存rootの読込を維持します。CURRENTが壊れても世代一覧から最後の完全rootを選べます。保存streamが失敗・panicした場合もlockを解放し、不完全なrootを公開しません。
 
 参照するregion archiveを一つずつ保存rootへ含めるので、未読込世界を全てRAMへ集めません。`World::load`はroot読込から参照blobの検証までread transactionでpruneとの競合を防ぎ、別の空のpaging保存先へも区域を復元できます。低水準の`latest_manifest`と`read_record`を組み合わせる呼出側も`read_transaction`を使ってください。
 
@@ -82,6 +82,6 @@ Windowsのfile同期とrenameを`FilesAndAtomicPublish`、Unixのdirectory同期
 
 ## Runtimeと費用
 
-`AppBuilder::sandbox_world`/`EngineBuilder::sandbox_world`でnative Worldを登録します。Systemは`engine:terrain`のアクセスを宣言し、`WorldView::terrain`と`WorldAccess::edit_terrain`を使います。編集callbackはbarrierで実行され、失敗時はWorld状態とtickを共に公開しません。callbackの機械語やクロージャはserializeせず、確定tickの結果を保存します。
+`AppBuilder::sandbox_world`/`EngineBuilder::sandbox_world`でnative Worldを登録します。Systemは`engine:terrain`のアクセスを宣言し、`WorldView::terrain`と`WorldAccess::edit_terrain`を使います。編集callbackはbarrierで実行され、失敗時はWorld状態とtickを共に公開しません。登録中の地形時計はRuntimeが所有し、callback適用前後と確定前に時計の一致を検査します。callbackによる`advance_tick`はpause中も含めてエラーとなり、先行する作者状態の変更も巻き戻します。独立したWorldの初期構築や作者の別ClockDomainはこの制約とは別の経路です。callbackの機械語やクロージャはserializeせず、確定tickの結果を保存します。
 
 通常編集はchunk pageをCOW共有しますが、個体arena・管理辞書・検証にも費用があります。1cell編集が世界全体に対して定数時間とは説明しません。大規模操作にはJobとbatch、明示容量を使い、E13で参照実装との一致を保って最適化します。

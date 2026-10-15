@@ -860,6 +860,8 @@ impl WorldAccess<'_> {
     }
     /// 短命な編集callbackをbarrierへ提出します。callback自体は保存せず、確定結果を保存します。
     /// 返却時にはviewはまだ変わりません。失敗したcallbackを含む候補tickは公開しません。
+    /// 登録中のWorld時計はRuntimeが所有します。callbackによる時計の変更は拒否し、
+    /// pause中でも地形とRuntimeの時計が一致するよう取引全体を公開しません。
     pub fn edit_terrain(
         &mut self,
         world: WorldId,
@@ -970,13 +972,27 @@ impl CommandBuffer {
         for command in self.commands.drain(..) {
             match command {
                 Command::Terrain { world, callback } => {
-                    let terrain = worlds.get_mut(world)?.terrain.as_mut().ok_or_else(|| {
+                    let entry = worlds.get_mut(world)?;
+                    let expected_tick = entry.tick;
+                    let terrain = entry.terrain.as_mut().ok_or_else(|| {
                         error(
                             ErrorCode::UnsupportedCapability,
                             "sandbox地形を持たないWorld",
                         )
                     })?;
+                    if terrain.tick() != expected_tick {
+                        return Err(error(
+                            ErrorCode::InvalidState,
+                            "地形とRuntimeの時計が不一致",
+                        ));
+                    }
                     callback(terrain)?;
+                    if terrain.tick() != expected_tick {
+                        return Err(error(
+                            ErrorCode::InvalidState,
+                            "Runtime編集中の地形時計変更",
+                        ));
+                    }
                 }
                 Command::Put {
                     world,
@@ -1365,6 +1381,16 @@ impl Engine {
             }
             pending.commands.flush(&mut pending.worlds)?;
             for world in &mut pending.worlds.entries {
+                if world
+                    .terrain
+                    .as_ref()
+                    .is_some_and(|terrain| terrain.tick() != world.tick)
+                {
+                    return Err(error(
+                        ErrorCode::InvalidState,
+                        "確定前の地形とRuntimeの時計が不一致",
+                    ));
+                }
                 if !world.paused {
                     if let Some(terrain) = &mut world.terrain {
                         terrain.edit(|edit| edit.advance_tick())?;
