@@ -55,10 +55,19 @@ pub trait Scene: 'static {
 
 /// loadで使える設定とサービスです。資産の具体的なdecodeはE03のproviderが担います。
 pub struct LoadContext<'a> {
+    pub(crate) scope: ScopeId,
     pub(crate) settings: &'a EngineSettings,
+    pub(crate) assets: &'a mut crate::assets::AssetServer,
     pub(crate) services: &'a ServiceRegistry,
 }
 impl LoadContext<'_> {
+    /// このSceneの開始期間が保持する資産を読み込みます。停止時に保持権を一括解除します。
+    pub fn assets(&mut self) -> crate::assets::AssetLoader<'_> {
+        self.assets
+            .loader(self.scope)
+            .expect("実行中Sceneの資産scope")
+    }
+
     /// 解決済み設定。
     pub fn settings(&self) -> &EngineSettings {
         self.settings
@@ -150,6 +159,7 @@ pub struct SceneContext<'a> {
     pub(crate) key: StableKey,
     pub(crate) scope: ScopeId,
     pub(crate) settings: &'a EngineSettings,
+    pub(crate) assets: &'a mut crate::assets::AssetServer,
     pub(crate) services: &'a ServiceRegistry,
     pub(crate) worlds: &'a WorldSet,
     pub(crate) commands: &'a mut CommandBuffer,
@@ -160,6 +170,13 @@ pub struct SceneContext<'a> {
     pub(crate) request_limit: usize,
 }
 impl SceneContext<'_> {
+    /// このSceneの開始期間が保持する資産を読み込みます。停止時に保持権を一括解除します。
+    pub fn assets(&mut self) -> crate::assets::AssetLoader<'_> {
+        self.assets
+            .loader(self.scope)
+            .expect("実行中Sceneの資産scope")
+    }
+
     /// 現在処理するtick。
     pub fn tick(&self) -> u64 {
         self.tick
@@ -218,12 +235,41 @@ impl SceneContext<'_> {
 
 /// 表示callbackへ渡します。Worldへのcommandは提供しません。
 pub struct FrameContext<'a> {
+    pub(crate) assets: &'a mut crate::assets::AssetServer,
+    pub(crate) render_frame: &'a mut crate::presentation::RenderFrame,
+    pub(crate) scope: ScopeId,
     pub(crate) tick: u64,
     pub(crate) alpha: f64,
     pub(crate) worlds: &'a WorldSet,
     pub(crate) services: &'a ServiceRegistry,
 }
 impl FrameContext<'_> {
+    /// frame抽出中の表示側だけで非同期結果をpollできます。World更新とは独立です。
+    pub fn assets(&mut self) -> &mut crate::assets::AssetServer {
+        self.assets
+    }
+    /// 停止後に使えないscope付きreload要求の入口です。
+    pub fn loader(&mut self) -> crate::assets::AssetLoader<'_> {
+        self.assets
+            .loader(self.scope)
+            .expect("実行中Sceneの資産scope")
+    }
+    /// 既定のscreen cameraでspriteを提出します。
+    pub fn draw(&mut self) -> crate::presentation::DrawContext<'_> {
+        let camera = crate::presentation::Camera2d::screen(
+            self.render_frame.width,
+            self.render_frame.height,
+        );
+        self.render_frame.draw(self.assets, camera)
+    }
+    /// 作者のcameraでspriteを提出します。複数cameraへ同じ画像を描けます。
+    pub fn draw_with(
+        &mut self,
+        camera: crate::presentation::Camera2d,
+    ) -> crate::presentation::DrawContext<'_> {
+        self.render_frame.draw(self.assets, camera)
+    }
+
     /// 最後に公開されたtick。
     pub fn tick(&self) -> u64 {
         self.tick

@@ -69,3 +69,7 @@ UI倍率、色以外の状態表示、字幕、点滅・shake軽減、音量個�
 ## デバイス障害
 
 surface resize、GPU device lost、音声device切断では表示側の世代を破棄し、CPU側の資産から再生成する。失敗した場合もWorldと保存機能を維持する。GPUの待機中に未完了のSnapshotを編集しない。
+
+## E03の実装先
+
+資産・基本sprite/camera・参照描画・wgpu表示の具体的なAPI、pack形式、保持・世代・容量の契約は[28](28_ASSET_AND_BASIC_RENDERING.md)を参照する。実行結果は[evidence/E03](evidence/E03/README.md)。上記の完成した表現、UI、文字組み、音声再生、機器復帰は後工程の要求として保持する。

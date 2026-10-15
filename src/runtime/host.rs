@@ -20,6 +20,8 @@ use winit::{
 
 struct Host {
     engine: Engine,
+    pixels: Option<pixels::Pixels<'static>>,
+    next_frame: Instant,
     window: Option<Arc<Window>>,
     last: Instant,
     started: Instant,
@@ -31,6 +33,16 @@ struct Host {
 /// 表示adapterがsurfaceを接続するためのOS側handleです。正規Worldへ保存しません。
 #[derive(Clone)]
 pub struct DesktopWindow(Arc<Window>);
+/// 実際にsurfaceへ接続したGPUの情報です。設定の要求値とは区別します。
+#[derive(Clone, Debug)]
+pub struct DesktopGpu {
+    /// Vulkan、Dx12、Metal等の実際のbackend名。
+    pub backend: String,
+    /// adapterが報告したdevice名。
+    pub name: String,
+    /// このdeviceの最大texture寸法。
+    pub max_texture_dimension: u32,
+}
 impl DesktopWindow {
     /// winitへの明示的な接続です。依存するのは表示adapterだけに限定します。
     pub fn window(&self) -> &Arc<Window> {
@@ -123,6 +135,55 @@ impl ApplicationHandler for Host {
                     self.stop(event_loop, error);
                     return;
                 }
+                let size = window.inner_size();
+                let settings = self.engine.settings();
+                let frame = self.engine.render_frame();
+                let backend = match settings.render.backend.as_str() {
+                    "vulkan" => pixels::wgpu::Backends::VULKAN,
+                    "dx12" => pixels::wgpu::Backends::DX12,
+                    "metal" => pixels::wgpu::Backends::METAL,
+                    _ => pixels::wgpu::Backends::PRIMARY,
+                };
+                let surface = pixels::SurfaceTexture::new(
+                    size.width.max(1),
+                    size.height.max(1),
+                    Arc::clone(&window),
+                );
+                match pixels::PixelsBuilder::new(frame.width, frame.height, surface)
+                    .wgpu_backend(backend)
+                    .enable_vsync(settings.render.vsync)
+                    .build()
+                {
+                    Ok(mut pixels) => {
+                        pixels.set_scaling_mode(if settings.render.scaling == "integer" {
+                            pixels::ScalingMode::PixelPerfect
+                        } else {
+                            pixels::ScalingMode::Fill
+                        });
+                        let info = pixels.adapter().get_info();
+                        let profile = DesktopGpu {
+                            backend: format!("{:?}", info.backend),
+                            name: info.name,
+                            max_texture_dimension: pixels
+                                .device()
+                                .limits()
+                                .max_texture_dimension_2d,
+                        };
+                        if let Err(error) = self.engine.attach_gpu(profile) {
+                            self.stop(event_loop, error);
+                            return;
+                        }
+                        self.pixels = Some(pixels);
+                    }
+                    Err(cause) => {
+                        self.stop(
+                            event_loop,
+                            error(ErrorCode::DeviceLost, "wgpu surface準備")
+                                .detail(cause.to_string()),
+                        );
+                        return;
+                    }
+                }
                 self.window = Some(window);
                 self.last = Instant::now();
                 self.started = self.last;
@@ -183,6 +244,16 @@ impl ApplicationHandler for Host {
                     InputValue::Button(state == ElementState::Pressed),
                 );
             }
+            WindowEvent::Resized(size) if size.width > 0 && size.height > 0 => {
+                if let Some(pixels) = &mut self.pixels
+                    && let Err(cause) = pixels.resize_surface(size.width, size.height)
+                {
+                    self.stop(
+                        event_loop,
+                        error(ErrorCode::DeviceLost, "surface resize").detail(cause.to_string()),
+                    );
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => self.input(
                 InputBinding::Pointer(0),
                 InputValue::Pointer {
@@ -191,9 +262,33 @@ impl ApplicationHandler for Host {
                 },
             ),
             WindowEvent::RedrawRequested => {
-                if let Err(error) = self.engine.frame(self.engine.interpolation()) {
+                if self.window.as_ref().is_some_and(|window| {
+                    let size = window.inner_size();
+                    size.width == 0 || size.height == 0
+                }) {
+                    return;
+                }
+                let result = (|| {
+                    self.engine.frame(self.engine.interpolation())?;
+                    if let Some(pixels) = &mut self.pixels {
+                        self.engine.render_into(pixels.frame_mut())?;
+                        pixels.render().map_err(|cause| {
+                            error(ErrorCode::DeviceLost, "wgpu frame表示").detail(cause.to_string())
+                        })?;
+                    }
+                    Ok(())
+                })();
+                if let Err(error) = result {
                     self.stop(event_loop, error);
                 }
+                let delay = self
+                    .engine
+                    .settings()
+                    .render
+                    .frame_limit
+                    .map(|hz| std::time::Duration::from_secs_f64(1.0 / f64::from(hz)))
+                    .unwrap_or_default();
+                self.next_frame = Instant::now() + delay;
             }
             _ => {}
         }
@@ -217,18 +312,30 @@ impl ApplicationHandler for Host {
             event_loop.exit();
             return;
         }
-        if let Some(window) = &self.window {
+        if now >= self.next_frame
+            && let Some(window) = &self.window
+        {
             window.request_redraw();
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(now + self.engine.until_next_tick()));
+        let next_tick = now + self.engine.until_next_tick();
+        let wake = if self.engine.settings().render.frame_limit.is_some() {
+            next_tick.min(self.next_frame.max(now))
+        } else {
+            next_tick
+        };
+        event_loop.set_control_flow(if self.engine.settings().render.frame_limit.is_some() {
+            ControlFlow::WaitUntil(wake)
+        } else {
+            ControlFlow::Poll
+        });
     }
 }
 
 impl Engine {
     /// OS event loopを実行します。headlessのstepと同じ固定更新へ接続します。
     ///
-    /// このhostはwindow/input/lifecycleを担当し、画像や音の機能を装いません。
-    /// 描画・音響providerはそれぞれの登録と認定が必要です。
+    /// CPUの表示snapshotを作者adapterで描画し、pixels/wgpuでsurfaceへ表示します。
+    /// 音声再生とdevice復帰の完全な統合はE09の音響・表示サービスが担当します。
     pub fn run(self) -> EngineResult<()> {
         let event_loop =
             EventLoop::new().map_err(|_| error(ErrorCode::DeviceLost, "OS event loop作成"))?;
@@ -236,6 +343,8 @@ impl Engine {
         let now = Instant::now();
         let mut host = Host {
             engine: self,
+            pixels: None,
+            next_frame: now,
             window: None,
             last: now,
             started: now,
