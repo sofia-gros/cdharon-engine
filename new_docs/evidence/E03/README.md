@@ -85,7 +85,7 @@ GPUは既存のpixels/wgpu、windowは既存のwinitを使う。音声再生・�
 
 コミット予定のtreeを別の作業コピーへ展開して検査する。旧M3等の未コミット変更を含まない構成では既存が101件となるため、E01 19 + E02 24 + E03 22を加えた**166件**が対象になる。作業ツリーの177件とは区別する。
 
-[E03 CI](../../../.github/workflows/e03-assets.yml)はWindows、Ubuntu、macOSで同じ固定packの読込、各形式のimport、scope/世代/取消、CPU参照描画、headless作例を実行する。初回コミット`286f6f4`は[3 OS CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38660153737)と[Rust CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38660153589)で成功した。取消回収の追加修正は再検証する。Windows実機以外のGPU/surface認定を、このheadless CIの成功だけで主張しない。
+[E03 CI](../../../.github/workflows/e03-assets.yml)はWindows、Ubuntu、macOSで同じ固定packの読込、各形式のimport、scope/世代/取消、CPU参照描画、headless作例を実行する。初回コミット`286f6f4`は[3 OS CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38660153737)と[Rust CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38660153589)で成功した。取消回収の追加修正については末尾の結果を参照する。Windows実機以外のGPU/surface認定を、このheadless CIの成功だけで主張しない。
 
 ## 後工程の範囲
 
@@ -104,3 +104,16 @@ Sceneがjobを保持したまま停止する場合と、明示cancel後もjobを
 最終の分離作業コピーで全**168件**（既存101 + E01 19 + E02 24 + E03 24）、fmt、全target check、警告拒否Clippy、Rustdocが成功した。上の177件・166件は追加修正前の実行履歴であり、今回の最終件数とは区別する。
 
 追加修正後のOS window smokeもVulkan / GeForce RTX 4060で成功した。120固定tick、273表示frame、exit code 0を確認した。
+
+### 修正コミットのCI
+
+検査対象は`906cf38789ab1d748879ce9e9ac2ecd57f046dec`。
+
+- [全体Rust CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38714552266)：成功。
+- [同じpackを使った3 OS CI](https://github.com/sofia-gros/cdharon-engine/actions/runs/38714552237)：Windows・Ubuntu・macOSのすべてが成功。
+
+この記録だけを更新する後続コミットでも、検証したコードのrevisionは上記とする。
+
+## E03の通過判定
+
+工程表の出口である、同一packの各OSでの読込、Scene間共有・scope解放・世代差し替えが公開APIの試験と3 OS CIで成立した。sprite/camera/adapterをheadlessとWindows実表示で確認し、レビューで見つけた容量・取消・描画境界の問題を修正した。以上を根拠にE03を通過とする。E09以降の完成した表現・音響、E13の性能・全GPU認定、製品全体のv1.0.0通過はこの判定に含めない。
