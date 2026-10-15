@@ -15,5 +15,5 @@ pub use engine::{
     AppBuilder, Engine, EngineBuilder, HeadlessRuntime, Plugin, RenderCapabilities,
     ServiceRegistry, StepResult, WorldAccess, WorldView,
 };
-pub use host::DesktopWindow;
+pub use host::{DesktopGpu, DesktopWindow};
 pub use scene::{FrameContext, LoadContext, Scene, SceneContext, SceneState, StopContext};

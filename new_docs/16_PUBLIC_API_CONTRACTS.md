@@ -144,3 +144,11 @@ APIの使いやすさは、初見の作者が独自Scene・素材・操作・保
 - `frame`は公開Worldを読むだけ。pauseはScene updateを止め、renderとscopeを残す。World pauseは独立し、Worldに結び付けたSystemと時計だけを止める。
 - `ClockDomain`は分数速度・余り・pauseをcodecで保存できる。`RandomSource`と作者の乱数stateはE01のStateStoreに格納し、Systemの順序で消費する。壁時計から乱数を作らない。
 - callback内部で変更した作者structや外部資源そのものを巻き戻すことはできない。正規stateはWorldへ置く。callback失敗時はWorldを公開せずRuntimeを停止し、scopeとpluginのcleanupを試行する。
+
+## E03で接続した資産と表示
+
+[E03の具体的な契約と利用例](28_ASSET_AND_BASIC_RENDERING.md)は実装済みAPIを説明する。`LoadContext::assets`でscope付きload、`FrameContext::draw/draw_with`でsprite抽出、`FrameContext::loader/assets`で表示用の非同期要求と明示公開を行う。
+
+`AssetHandle<T>`は保持せず、`AssetLease<T>`とScene scopeと提出済みframeが保持する。世代の差し替えは旧handleを新内容へ向け直さない。独自形式は`Asset`/`Importer<T>`、描画の置換は`RenderAdapter`を使い、CPUのsnapshotを独自hostへ取り出すこともできる。資産と描画から正規Worldへの可変参照は返さない。
+
+E02時点で記載したLoadContextの設定・serviceだけという制約は、E03でasset loaderを接続したことで解消した。資産と基本表示以外のv1 APIを実装済みと扱わない。

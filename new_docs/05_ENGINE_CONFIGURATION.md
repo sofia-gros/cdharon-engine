@@ -100,6 +100,7 @@ Cargoのfeatureは条件付きコンパイルや任意の依存を扱う仕組�
 | `render.vsync` | bool | `true` |
 | `render.frame_limit` | 正の整数、省略可 | 上限の明示指定なし |
 | `render.resolution_scale` | 正の有限数、描画先上限を検証 | `1.0` |
+| `render.scaling` | `fit/integer`。縦横比維持の拡大縮小、または整数倍率・中央clip | `fit` |
 | `render.lighting` | `disabled/grid` | `grid` |
 | `audio.master_volume` | `0.0..=1.0` | `1.0` |
 | `audio.device` | 出力装置識別子、省略可 | OSの既定装置 |

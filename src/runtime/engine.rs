@@ -130,12 +130,27 @@ impl ServiceRegistry {
 /// 起動前の登録先です。buildが終わるまで公開Runtimeを作りません。
 #[derive(Default)]
 pub struct AppBuilder {
+    assets: Option<crate::assets::AssetServer>,
     settings: EngineSettings,
     worlds: Vec<(StableKey, StateStore)>,
     services: ServiceRegistry,
     systems: Vec<SystemEntry>,
 }
 impl AppBuilder {
+    /// 作者が準備したmount/cacheを使います。二重登録を拒否します。
+    pub fn asset_server(&mut self, server: crate::assets::AssetServer) -> EngineResult<()> {
+        if self.assets.is_some() {
+            return Err(error(ErrorCode::DuplicateKey, "資産server"));
+        }
+        self.assets = Some(server);
+        Ok(())
+    }
+    /// pluginがsourceのmountや使用許諾を登録する入口です。
+    pub fn assets(&mut self) -> EngineResult<&mut crate::assets::AssetServer> {
+        self.assets
+            .as_mut()
+            .ok_or_else(|| error(ErrorCode::InvalidState, "資産server準備前"))
+    }
     /// pluginが能力を解決する際に使用する、統合済み共通設定です。
     pub fn settings(&self) -> &EngineSettings {
         &self.settings
@@ -221,6 +236,7 @@ impl AppBuilder {
 /// 起動設定をチェーン形式で集め、buildで一括検証します。
 #[derive(Default)]
 pub struct EngineBuilder {
+    renderer: Option<Box<dyn crate::presentation::RenderAdapter>>,
     config: Option<PathBuf>,
     patch: EngineSettingsPatch,
     plugins: Vec<Box<dyn Plugin>>,
@@ -234,6 +250,21 @@ pub struct EngineBuilder {
     scope_capacity: u32,
 }
 impl EngineBuilder {
+    /// 描画snapshotの解釈を作者adapterへ置換します。World更新経路は変わりません。
+    pub fn render_adapter(
+        mut self,
+        adapter: impl crate::presentation::RenderAdapter + 'static,
+    ) -> Self {
+        self.renderer = Some(Box::new(adapter));
+        self
+    }
+    /// 配布packや独自VFSを使う資産serverを渡します。
+    pub fn asset_server(mut self, server: crate::assets::AssetServer) -> Self {
+        if let Err(error) = self.app.asset_server(server) {
+            self.failure = Some(error);
+        }
+        self
+    }
     /// YAMLの所在を指定します。
     pub fn config_file(mut self, path: impl Into<PathBuf>) -> Self {
         self.config = Some(path.into());
@@ -332,6 +363,35 @@ impl EngineBuilder {
         }
         let mut settings = EngineSettings::resolve(self.config.as_deref(), &self.patch)?;
         self.app.settings = settings.clone();
+        if self.app.assets.is_none() {
+            use crate::assets::{AssetServer, AssetSettings, Vfs, VfsLimits};
+            let mut vfs = Vfs::new(VfsLimits::default());
+            if settings.assets.root.exists() {
+                vfs.mount_directory("game", &settings.assets.root)?;
+            }
+            let workers = match &settings.assets.decode_workers {
+                super::config::WorkerCount::Count(count) => usize::from(*count),
+                _ => std::thread::available_parallelism()
+                    .map_or(1, usize::from)
+                    .min(4),
+            };
+            let cache_bytes =
+                usize::try_from(u64::from(settings.assets.cache_mib) * 1024 * 1024)
+                    .map_err(|_| error(ErrorCode::CapacityExceeded, "資産cache byte数"))?;
+            self.app.assets = Some(AssetServer::new(
+                vfs,
+                AssetSettings {
+                    cache_bytes,
+                    workers,
+                    ..AssetSettings::default()
+                },
+            )?);
+        }
+        let render_frame = crate::presentation::RenderFrame::new(
+            settings.window.width,
+            settings.window.height,
+            settings.limits.commands_per_tick as usize,
+        )?;
         for key in &self.initial {
             if !self.scenes.iter().any(|scene| scene.key == *key) {
                 return Err(error(ErrorCode::MissingKey, "初期Scene"));
@@ -532,6 +592,15 @@ impl EngineBuilder {
         };
         let limit = settings.limits.commands_per_tick as usize;
         let mut engine = Engine {
+            assets: self
+                .app
+                .assets
+                .take()
+                .ok_or_else(|| error(ErrorCode::InvalidState, "資産server"))?,
+            render_frame,
+            renderer: self
+                .renderer
+                .unwrap_or_else(|| Box::new(crate::presentation::ScalarRenderer::default())),
             settings,
             worlds,
             services: self.app.services,
@@ -845,6 +914,9 @@ pub enum StepResult {
 
 /// Scene、World、serviceを所有するRuntime。描画なしでもそのまま使用できます。
 pub struct Engine {
+    assets: crate::assets::AssetServer,
+    render_frame: crate::presentation::RenderFrame,
+    renderer: Box<dyn crate::presentation::RenderAdapter>,
     pub(crate) settings: EngineSettings,
     worlds: WorldSet,
     services: ServiceRegistry,
@@ -1071,6 +1143,7 @@ impl Engine {
                 key: entry.key,
                 scope,
                 settings: &self.settings,
+                assets: &mut self.assets,
                 services: &self.services,
                 worlds: &self.worlds,
                 commands: &mut pending.commands,
@@ -1215,6 +1288,7 @@ impl Engine {
         if !alpha.is_finite() || !(0.0..=1.0).contains(&alpha) {
             return Err(error(ErrorCode::InvalidValue, "表示補間alpha"));
         }
+        self.render_frame.reset();
         for key in self.scene_order.clone() {
             let index = self.scene_index(key)?;
             let entry = &mut self.scenes[index];
@@ -1222,6 +1296,11 @@ impl Engine {
                 && let Err(error) = entry.scene.render(&mut FrameContext {
                     tick: self.tick,
                     alpha,
+                    assets: &mut self.assets,
+                    render_frame: &mut self.render_frame,
+                    scope: entry
+                        .scope
+                        .ok_or_else(|| error(ErrorCode::InvalidState, "描画scope"))?,
                     worlds: &self.worlds,
                     services: &self.services,
                 })
@@ -1231,7 +1310,19 @@ impl Engine {
                 return Err(error);
             }
         }
-        Ok(())
+        self.render_frame.validate()
+    }
+    /// 最後に抽出した表示snapshot。GPUや作者adapterへ渡せます。
+    pub fn render_frame(&self) -> &crate::presentation::RenderFrame {
+        &self.render_frame
+    }
+    /// 最後に抽出したframeを作者adapterで描画します。成功したtargetだけを表示してください。
+    pub fn render_into(&mut self, target: &mut [u8]) -> EngineResult<()> {
+        self.renderer.render(&self.render_frame, target)
+    }
+    /// CPU資産の明示的な保持・解放・reloadを行う表示側の入口です。
+    pub fn assets(&mut self) -> &mut crate::assets::AssetServer {
+        &mut self.assets
     }
     /// wall-clockの余りを整数で保持し、完了したtickだけ予算から取り出します。
     pub fn advance(&mut self, elapsed: Duration, max_ticks: u32) -> EngineResult<u32> {
@@ -1291,6 +1382,8 @@ impl Engine {
                 first.get_or_insert(error);
             }
         }
+        self.render_frame.reset();
+        self.assets.collect();
         self.closed = true;
         if let Some(error) = first {
             Err(error)
@@ -1300,6 +1393,19 @@ impl Engine {
     }
     pub(crate) fn is_quit(&self) -> bool {
         self.quit
+    }
+    pub(crate) fn attach_gpu(&mut self, profile: super::host::DesktopGpu) -> EngineResult<()> {
+        let slot = StableKey::parse("engine:gpu-info")?;
+        if self.services.contains(slot) {
+            return Err(error(ErrorCode::DuplicateKey, "GPU情報service"));
+        }
+        self.services.entries.push(Service {
+            slot,
+            implementation: StableKey::parse("engine:wgpu")?,
+            dependencies: Vec::new(),
+            value: Box::new(profile),
+        });
+        Ok(())
     }
     pub(crate) fn attach_window(&mut self, window: super::host::DesktopWindow) -> EngineResult<()> {
         let slot = StableKey::parse("engine:window")?;
@@ -1352,6 +1458,8 @@ impl Engine {
                 first.get_or_insert(error);
             }
         }
+        self.assets.close_scope(scope);
+        self.assets.collect();
         if let Err(error) = self.input.release_scope(scope) {
             first.get_or_insert(error);
         }
@@ -1380,8 +1488,11 @@ impl Engine {
         let entry = &mut self.scenes[index];
         entry.scope = Some(scope);
         entry.state = SceneState::Loading;
+        self.assets.open_scope(scope)?;
         if let Err(error) = entry.scene.load(&mut LoadContext {
+            scope,
             settings: &self.settings,
+            assets: &mut self.assets,
             services: &self.services,
         }) {
             entry.state = SceneState::Failed;
@@ -1393,6 +1504,7 @@ impl Engine {
             key: entry.key,
             scope,
             settings: &self.settings,
+            assets: &mut self.assets,
             services: &self.services,
             worlds: &self.worlds,
             commands: &mut self.lifecycle_commands,

@@ -36,6 +36,8 @@ group!(WindowSettings, WindowPatch {
     display: Option<String> = None
 });
 group!(RenderSettings, RenderPatch {
+    /// surfaceへの表示倍率。fitは縦横比を保つ拡大縮小、integerは整数倍率と余白・clipを使います。
+    scaling: String = "fit".into(),
     /// autoまたはcompiled providerが提供するbackend名。文字列だけで実装を追加できません。
     backend: String = "auto".into(),
     /// 描画adapterへ渡す垂直同期の要求です。
@@ -306,7 +308,8 @@ impl EngineSettings {
         if self.schema_version != 1 || self.window.width == 0 || self.window.height == 0 {
             return Err(invalid("schema_versionまたはwindow寸法"));
         }
-        if !["auto", "vulkan", "dx12", "metal"].contains(&self.render.backend.as_str())
+        if !["fit", "integer"].contains(&self.render.scaling.as_str())
+            || !["auto", "vulkan", "dx12", "metal"].contains(&self.render.backend.as_str())
             || !["disabled", "grid"].contains(&self.render.lighting.as_str())
             || !self.render.resolution_scale.is_finite()
             || self.render.resolution_scale <= 0.0

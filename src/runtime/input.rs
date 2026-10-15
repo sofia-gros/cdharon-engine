@@ -45,13 +45,16 @@ pub enum InputValue {
     Button(bool),
     /// -1から1のaxis。
     Axis(f32),
-    /// viewport座標。World座標へ暗黙変換しません。
+    /// 論理RenderFrame座標。cameraごとのWorld座標へは作者が明示変換します。
     Pointer {
         /// 水平方向。
         x: f64,
         /// 垂直方向。
         y: f64,
     },
+    /// pointerがframe外・余白・window外にあり、有効な論理座標を持ちません。
+    /// 最後の座標を残すと、画面外へ出てもゲーム内の同じ位置を指し続けるため明示します。
+    PointerUnavailable,
 }
 
 /// 同一source内で順序を固定する機器eventです。
@@ -199,7 +202,9 @@ impl InputManager {
                 let kind = match event.value {
                     InputValue::Button(_) => ValueKind::Button,
                     InputValue::Axis(_) => ValueKind::Axis,
-                    InputValue::Pointer { .. } => ValueKind::Pointer,
+                    InputValue::Pointer { .. } | InputValue::PointerUnavailable => {
+                        ValueKind::Pointer
+                    }
                 };
                 if action.bindings.contains(&event.binding) && action.kind != kind {
                     return Err(invalid("入力eventと登録アクションの型が異なる"));
@@ -437,7 +442,12 @@ fn validate(binding: InputBinding, value: InputValue) -> EngineResult<()> {
     {
         return Err(invalid("物理buttonの値型"));
     }
-    if matches!(binding, InputBinding::Pointer(_)) && !matches!(value, InputValue::Pointer { .. }) {
+    if matches!(binding, InputBinding::Pointer(_))
+        && !matches!(
+            value,
+            InputValue::Pointer { .. } | InputValue::PointerUnavailable
+        )
+    {
         return Err(invalid("pointerの値型"));
     }
     Ok(())
@@ -503,6 +513,7 @@ impl StateCodec for InputValue {
                 x.encode(out)?;
                 y.encode(out)
             }
+            Self::PointerUnavailable => out.u8(3),
         }
     }
     fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
@@ -513,6 +524,7 @@ impl StateCodec for InputValue {
                 x: f64::decode(input)?,
                 y: f64::decode(input)?,
             },
+            3 => Self::PointerUnavailable,
             _ => return Err(invalid("入力値のtag")),
         })
     }
@@ -551,8 +563,9 @@ impl StateCodec for TickInput {
         let tick = input.u64()?;
         let reset = bool::decode(input)?;
         let count = input.u32()? as usize;
-        // 最短eventでも17byte必要です。偽の個数による巨大確保を先に防ぎます。
-        if count > input.remaining() / 17 {
+        // PointerUnavailableはsource 4 + sequence 8 + pointer binding 3 + 値tag 1の
+        // 16byteです。最短recordに合わせて偽の個数による巨大確保を先に防ぎます。
+        if count > input.remaining() / 16 {
             return Err(invalid("入力record数と残byte数"));
         }
         let mut events = Vec::new();
