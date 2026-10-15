@@ -94,3 +94,5 @@ cargo doc --lib --no-deps --locked
 エンジン本体は[MIT License](LICENSE)です。依存crateと同梱資産にはそれぞれのライセンスが適用されます。[E03の検査用資産](tests/fixtures/e03/README.md)には、生成した画像・音声と、OFLのfontの出典・使用許諾を記録しています。
 
 PR #1のRuntime指摘も反映し、非活動Systemのphase境界、World横断recordの競合検出、plugin設定拒否時の解放対象を修正しています。根拠は[E02の記録](new_docs/evidence/E02/README.md)を参照してください。
+
+PR #2のポインター指摘に対応し、HiDPI・resize後も論理frame座標を使用します。余白やwindow外へ出たpointerは無効化し、他の入力状態は維持します。詳細は[E03の記録](new_docs/evidence/E03/README.md)を参照してください。

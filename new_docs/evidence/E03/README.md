@@ -117,3 +117,10 @@ Sceneがjobを保持したまま停止する場合と、明示cancel後もjobを
 ## E03の通過判定
 
 工程表の出口である、同一packの各OSでの読込、Scene間共有・scope解放・世代差し替えが公開APIの試験と3 OS CIで成立した。sprite/camera/adapterをheadlessとWindows実表示で確認し、レビューで見つけた容量・取消・描画境界の問題を修正した。以上を根拠にE03を通過とする。E09以降の完成した表現・音響、E13の性能・全GPU認定、製品全体のv1.0.0通過はこの判定に含めない。
+
+## PR #2のレビュー指摘対応
+
+- [4282003885](https://github.com/sofia-gros/charon-engine/pull/2#discussion_r4282003885)：E02の修正を取り込み、非活動Systemのphase末尾でも先行commandを次phaseへ反映します。E02の残る2件も同じRuntimeへ取り込みました。
+- [4282003892](https://github.com/sofia-gros/charon-engine/pull/2#discussion_r4282003892)：OS surfaceの物理pointerを論理frameへ変換し、余白/window外をPointerUnavailableとして無効化します。resizeとHiDPI変更時は静止中のpointerも再投影します。変換の単体検査と、無効入力のcodec往復・SceneのNone照会・held button維持の回帰検査を追加しました。
+
+新しい入力tag 3を追加し、既存tagの意味は維持します。新規依存はありません。全174件のテスト、全target check、警告拒否Clippy、整形、Rustdocが成功しました。実windowの120tick smokeもVulkan / NVIDIA GeForce RTX 4060で成功しました。実機で全DPI・全resizeの組合せを手動認定したという意味ではありません。

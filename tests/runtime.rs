@@ -1159,3 +1159,77 @@ fn configure_failure_cleans_only_plugins_whose_build_was_started() {
     ));
     assert_eq!(&*trace.borrow(), &[key("test:ready"), key("test:ready")]);
 }
+
+#[test]
+fn pointer_exit_is_canonical_input_and_does_not_reset_held_buttons() {
+    use charon_engine::foundation::codec::{Decoder, Encoder, StateCodec};
+    type PointerObservation = (Option<(f64, f64)>, bool);
+    struct PointerScene {
+        pointer: Option<ActionId>,
+        button: Option<ActionId>,
+        seen: Rc<RefCell<Vec<PointerObservation>>>,
+    }
+    impl Scene for PointerScene {
+        fn start(&mut self, ctx: &mut SceneContext<'_>) -> EngineResult<()> {
+            self.pointer = Some(
+                ctx.input()
+                    .pointer_action("aim")
+                    .binding(InputBinding::Pointer(0))
+                    .register()?,
+            );
+            self.button = Some(ctx.input().action("held").key("enter").register()?);
+            Ok(())
+        }
+        fn update(&mut self, ctx: &mut SceneContext<'_>) -> EngineResult<()> {
+            let input = ctx.input();
+            self.seen.borrow_mut().push((
+                input.pointer(self.pointer.unwrap())?,
+                input.held(self.button.unwrap())?,
+            ));
+            Ok(())
+        }
+    }
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let mut engine = Engine::builder()
+        .scene(
+            "game",
+            PointerScene {
+                pointer: None,
+                button: None,
+                seen: Rc::clone(&seen),
+            },
+        )
+        .start_scene("game")
+        .build()
+        .unwrap();
+    let mut first = event(1, 0, true);
+    first.events.push(InputEvent {
+        source: 0,
+        sequence: 1,
+        binding: InputBinding::Pointer(0),
+        value: InputValue::Pointer { x: 30.5, y: 12.25 },
+    });
+    engine.step(first).unwrap();
+    let exit = TickInput {
+        tick: 2,
+        reset: false,
+        events: vec![InputEvent {
+            source: 0,
+            sequence: 2,
+            binding: InputBinding::Pointer(0),
+            value: InputValue::PointerUnavailable,
+        }],
+    };
+    let mut encoder = Encoder::new(1024);
+    exit.encode(&mut encoder).unwrap();
+    let bytes = encoder.finish();
+    let mut decoder = Decoder::new(&bytes, 1024).unwrap();
+    let decoded = TickInput::decode(&mut decoder).unwrap();
+    decoder.finish().unwrap();
+    engine.step(decoded).unwrap();
+    engine.step(TickInput::empty(3)).unwrap();
+    assert_eq!(
+        &*seen.borrow(),
+        &[(Some((30.5, 12.25)), true), (None, true), (None, true)]
+    );
+}
