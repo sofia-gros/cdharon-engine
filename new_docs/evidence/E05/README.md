@@ -203,3 +203,15 @@ lambda0・1・3、隣接気体2cell、1反復の参照式を検査するテス�
 対象19テストと全298テストが成功。内訳はlib/host 107、assets 24、foundation 19、material_motion 12、material_receipts 15、material_transport 24、pressure_job 19、runtime 28、world 50。失敗・無視なし。fmt・全target check・警告拒否Clippy・Rustdoc、保存再開の作例も成功した。
 
 リソース使用の確認では、同じcommitに4 workflowがpushとpull_requestで二重起動し、計20ジョブとなっていた。開発ブランチはPR、pushはmain、手動実行は維持する設定へ統一した。検査項目と3 OSを削らず、以後の開発PRは計10ジョブにする。変更ごとの検査をまとめてからpushし、最新commitの実レビュー結果とCIで判定する。
+
+### 最新の停止条件
+
+ユーザーの最新指示により、**E05全体の完了・CIとレビューの問題解消後にマージして停止する。E06には着手しない。** PCへ戻すため、最後にmain/branchのcommit、PR、検証結果と引き継ぎ手順を記録する。これは以前の「E06へ進む」指示を置き換える。現時点はE05実装中である。
+
+### PR #7のP2対応：連結成分と訪問集合
+
+`777fc9b`は重複抑制後のCI10件すべて成功したが、[queue外の訪問済みnodeを受理するP2](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4291179686)を指摘された。
+
+decodeで連結成分を一度構築し、stage・cursor・rootに対応する訪問集合、BFS順のqueueと発見prefix、反映済みsourceとanchor、部分集計・target・診断件数を照合する。過去のJacobi反復は再実行しない。未処理の別成分のseenだけをtrueにしたrecordと、訪問bitを保ってqueue順だけを入れ替えたrecordを拒否する試験を追加した。前者は修正前に不整合を受理して失敗することを確認した。正しい保存は液体・気体・空間の複数連結成分について、全計算段階で復元可能なことを検査する。
+
+修正後は全300テスト成功（pressure_job 21、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdoc・保存再開作例が成功した。保存形式はCHPRJOB3を維持し、不整合recordへの検査を強化する。復元の一時scratchと連結探索の費用は33へ追記した。最新commitへの再レビューを待ち、指摘対応を終えてから次の実装単位へ進む。

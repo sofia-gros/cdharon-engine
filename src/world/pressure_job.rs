@@ -71,6 +71,28 @@ struct Node {
     next: i64,
 }
 
+#[derive(Clone, Copy, Default)]
+struct PressureSummary {
+    pressure: u128,
+    gas: u128,
+    open: bool,
+    has_gas: bool,
+}
+impl PressureSummary {
+    fn target(self, kind: u8, count: usize) -> EngineResult<i64> {
+        let value = if kind == 1 {
+            if self.open {
+                0
+            } else {
+                self.pressure / count as u128
+            }
+        } else {
+            self.gas / (count as u128 * 65536)
+        };
+        i64::try_from(value).map_err(|_| invalid("保存した成分targetの上限"))
+    }
+}
+
 /// Worldに所属する広域圧力job。StateCodecをschemaへ登録してWorld状態に保存できます。
 ///
 /// 入力は全活動chunkのrevisionで保守的に失効させます。入力採取は全活動地形の走査、
@@ -310,6 +332,220 @@ impl PressureJob {
                 .ok_or_else(|| invalid("広域圧力の仕事量上限"))?;
         }
         Ok(self.status())
+    }
+    // 復元時に連結成分を一度だけ構築し、保存した探索状態を検査します。
+    // Jacobiの過去の反復は再実行せず、保存した数値状態からの進捗を維持します。
+    fn validate_progress(&self) -> EngineResult<()> {
+        let n = self.nodes.len();
+        if self.stage <= 3 && self.iteration != 0 || self.stage == 5 && self.cursor != 0 {
+            return Err(invalid("広域圧力の段階と反復数"));
+        }
+        if self.stage == 0 {
+            if self.root != 0
+                || !self.queue.is_empty()
+                || self.queue_cursor != 0
+                || self.nodes.iter().any(|node| {
+                    node.seen
+                        || node.fixed.is_some()
+                        || node.source.is_some()
+                        || node.old != node.input.pressure
+                        || node.next != 0
+                })
+                || self.total_pressure != 0
+                || self.total_gas != 0
+                || self.open
+                || self.has_gas
+                || self.target != 0
+                || self.report.open_components != 0
+                || self.report.closed_components != 0
+            {
+                return Err(invalid("広域圧力の初期探索状態"));
+            }
+            return Ok(());
+        }
+        if matches!(self.stage, 2 | 3) && self.cursor != self.root {
+            return Err(invalid("広域圧力の探索root"));
+        }
+        let mut partition = Vec::new();
+        partition.try_reserve_exact(n).map_err(allocation)?;
+        partition.resize(n, false);
+        let mut bfs = Vec::new();
+        bfs.try_reserve_exact(n).map_err(allocation)?;
+        let mut last_completed = None;
+        let mut previous_target = 0;
+        let mut selected = false;
+        let mut report = PressureRelaxationReport {
+            cells: self.report.cells,
+            ..Default::default()
+        };
+        for root in 0..n {
+            if partition[root] {
+                continue;
+            }
+            bfs.clear();
+            bfs.push(root as u32);
+            partition[root] = true;
+            let current = matches!(self.stage, 2 | 3) && root == self.root;
+            let mut discovered = 1;
+            let mut cursor = 0;
+            while cursor < bfs.len() {
+                if current && self.stage == 2 && cursor == self.queue_cursor {
+                    discovered = bfs.len();
+                }
+                let node = &self.nodes[bfs[cursor] as usize];
+                for other in node.edges.into_iter().flatten() {
+                    if !partition[other as usize] {
+                        partition[other as usize] = true;
+                        bfs.push(other);
+                    }
+                }
+                cursor += 1;
+            }
+            if current && self.stage == 2 && cursor == self.queue_cursor {
+                discovered = bfs.len();
+            }
+            let completed = match self.stage {
+                1 => root < self.cursor,
+                2 | 3 => root < self.root,
+                4..=6 => true,
+                _ => false,
+            };
+            let reflected = completed || current && self.stage == 3;
+            let summary = if reflected {
+                self.summary(&bfs)?
+            } else {
+                PressureSummary::default()
+            };
+            let target = if reflected {
+                summary.target(self.nodes[root].input.kind, bfs.len())?
+            } else {
+                0
+            };
+            if reflected {
+                if self.nodes[root].input.kind == 1 {
+                    if summary.open {
+                        report.open_components += 1;
+                    } else {
+                        report.closed_components += 1;
+                    }
+                } else if summary.has_gas {
+                    report.closed_components += 1;
+                }
+            }
+            for (position, index) in bfs.iter().enumerate() {
+                let node = &self.nodes[*index as usize];
+                let seen = completed || current && (self.stage == 3 || position < discovered);
+                let assigned =
+                    completed || current && self.stage == 3 && position < self.queue_cursor;
+                let fixed = if !assigned {
+                    None
+                } else if node.input.kind == 0 {
+                    Some(0)
+                } else if node.input.surface
+                    || (node.input.kind == 1 && *index as usize == root && !summary.open)
+                {
+                    Some(target)
+                } else {
+                    None
+                };
+                let source = if assigned && node.input.kind == 2 {
+                    Some(target)
+                } else {
+                    None
+                };
+                if node.seen != seen || node.fixed != fixed || node.source != source {
+                    return Err(invalid("広域圧力の成分と訪問・source状態"));
+                }
+                if self.stage <= 3 && (node.old != node.input.pressure || node.next != 0) {
+                    return Err(invalid("広域圧力の反復前の数値状態"));
+                }
+            }
+            let retained = (self.stage == 1 || self.stage >= 4) && completed && root == self.root;
+            if current || retained {
+                selected = true;
+                let expected = if current && self.stage == 2 {
+                    if self.queue_cursor > bfs.len() {
+                        return Err(invalid("広域圧力の探索cursor"));
+                    }
+                    &bfs[..discovered]
+                } else {
+                    bfs.as_slice()
+                };
+                if self.queue != expected
+                    || (!current || self.stage != 2)
+                        && (self.stage != 3 && self.queue_cursor != bfs.len())
+                    || self.stage == 3 && self.queue_cursor > bfs.len()
+                {
+                    return Err(invalid("広域圧力の成分とqueue"));
+                }
+                let expected_summary = if current && self.stage == 2 {
+                    self.summary(&bfs[..self.queue_cursor])?
+                } else {
+                    summary
+                };
+                let expected_target = if current && self.stage == 2 {
+                    previous_target
+                } else {
+                    target
+                };
+                if self.total_pressure != expected_summary.pressure
+                    || self.total_gas != expected_summary.gas
+                    || self.open != expected_summary.open
+                    || self.has_gas != expected_summary.has_gas
+                    || self.target != expected_target
+                {
+                    return Err(invalid("広域圧力の探索集計とtarget"));
+                }
+            }
+            if completed {
+                last_completed = Some(root);
+                previous_target = target;
+            }
+        }
+        if report != self.report {
+            return Err(invalid("広域圧力の成分と診断件数"));
+        }
+        if matches!(self.stage, 2 | 3) {
+            if !selected {
+                return Err(invalid("広域圧力の成分rootが存在しない"));
+            }
+        } else if let Some(last) = last_completed {
+            if self.root != last || !selected {
+                return Err(invalid("広域圧力の最後の成分"));
+            }
+        } else if self.root != 0
+            || !self.queue.is_empty()
+            || self.queue_cursor != 0
+            || self.total_pressure != 0
+            || self.total_gas != 0
+            || self.open
+            || self.has_gas
+            || self.target != 0
+        {
+            return Err(invalid("広域圧力の未探索状態"));
+        }
+        Ok(())
+    }
+    fn summary(&self, queue: &[u32]) -> EngineResult<PressureSummary> {
+        let mut result = PressureSummary::default();
+        for index in queue {
+            let input = self.nodes[*index as usize].input;
+            result.pressure = result
+                .pressure
+                .checked_add(input.pressure as u128)
+                .ok_or_else(|| invalid("圧力集計上限"))?;
+            result.gas = result
+                .gas
+                .checked_add(
+                    u128::from(input.mass)
+                        * input.temperature as u128
+                        * u128::from(input.coefficient),
+                )
+                .ok_or_else(|| invalid("気体集計上限"))?;
+            result.open |= input.surface;
+            result.has_gas |= input.kind == 2;
+        }
+        Ok(result)
     }
     fn validate_context(&self, world: &World) -> EngineResult<()> {
         if self.world != world.id {
@@ -870,7 +1106,7 @@ impl StateCodec for PressureJob {
                 return Err(invalid("広域圧力queueの訪問状態"));
             }
         }
-        Ok(Self {
+        let job = Self {
             world,
             content,
             epoch,
@@ -895,7 +1131,9 @@ impl StateCodec for PressureJob {
             iteration,
             work,
             report,
-        })
+        };
+        job.validate_progress()?;
+        Ok(job)
     }
 }
 fn boolean(input: &mut Decoder<'_>) -> EngineResult<bool> {

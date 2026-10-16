@@ -55,7 +55,7 @@ schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存�
 
 World ID・Content fingerprint・material epoch・活動chunk集合とそのrevisionを保持する。入力の占有、channel、活動集合が変われば古いjobを失効させる。無関係な位置の編集でも同じ活動chunkなら再計算が必要な保守的方針である。完成後の公開によるrevision変更で同じ非空jobの二重公開を拒否する。出力がないjobの公開は状態を変えない。
 
-保存には入力と計算中の配列・queue・cursor・反復数を含め、復元後もその続きから進める。完成済みrecordはReadyを維持するが、公開前にWorldの実入力全体を再採取して照合する。切断・不正件数・負値・数値上限・不正index・隣接関係・queueの重複と訪問状態・不正段階・不可能な診断件数はdecodeで拒否する。
+保存には入力と計算中の配列・queue・cursor・反復数を含め、復元後もその続きから進める。完成済みrecordはReadyを維持するが、公開前にWorldの実入力全体を再採取して照合する。切断・不正件数・負値・数値上限・不正index・隣接関係・不正段階もdecodeで拒否する。連結成分を一度構築し、stage・cursor・rootから訪問集合、BFS順のqueueと発見prefix、反映済みsource・anchor、部分集計と診断件数を導いて保存値と照合する。未処理の別成分を訪問済みとして飛ばすrecord、別rootのqueueや順序の入替えは受理しない。
 
 old/nextの配列は保存する正規数値状態であり、過去の反復履歴を全再実行して検査しない。保存bufferのchecksumは既存の保存層が担う。jobを毎phaseでStateStoreから取得し、一件進めて再保存しても有限の仕事量で完了する。復元のたびに検査cursorを最初へ戻す方式は採用しない。
 
@@ -66,11 +66,11 @@ old/nextの配列は保存する正規数値状態であり、過去の反復履
 - newの入力採取は活動chunkの全4096cellを走査し、sampleを安定順に並べる。気体profileでは空cellも保持する。`cell_limit`にそれらを含め、容量不足なら開始しない。
 - stepの予算はcell処理の件数で、隣接検索にはsample数に対する二分探索を使う。毎stepの活動集合・revision照合は別途chunk数に依存する。wall-clockの一定時間保証ではない。
 - scratchはsample配列と最大sample数の探索queue。保存・復元は配列全体に比例する。StateStoreへ毎step保存する費用はsolverの件数予算に含めない。
-- decodeの構造検査は配列全体と隣接の二分探索に依存する。StateStoreを毎phaseで読み書きする費用は残るが、過去の反復の再計算や照合用の二重scratchを必要としない。
+- decodeの構造検査は配列全体、隣接の二分探索、一回の連結探索に依存し、訪問bit列と探索queueの一時scratchを使う。StateStoreを毎phaseで読み書きする費用は残るが、過去の反復の再計算や照合用の二重scratchを必要としない。
 - 公開は入力を再採取するscratch、全入力比較、出力列、channel容量予約と一括書込の費用を持つ。全反復のやり直しは公開時に行わない。
 
 このAPIを単独で全活動域を自動分割するscheduler、dirty/sleep、全solverのprovider登録、力の積分、物質粒子・混合・全表現収支の完成とは扱わない。巨大域で入力採取や最終公開まで厳密な時間分割が必要な作者は別profileを使える。これらのE05統合とQ04は続いて検証する。
 
 ## 検証
 
-`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3と空cell隣接の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、素材別の係数・lambda・上限とContent fingerprint、毎phaseのStateStore復元、切断と不可能な診断件数を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3でtarget Q16=131072、lambda1と空境界0からの緩和結果Q16=65536を検査し、途中保存と連続実行のcheckpoint一致をassertする。
+`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3と空cell隣接の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、素材別の係数・lambda・上限とContent fingerprint、毎phaseのStateStore復元、切断・不可能な診断件数・queue外の不正訪問bit・BFS順の不整合を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3でtarget Q16=131072、lambda1と空境界0からの緩和結果Q16=65536を検査し、途中保存と連続実行のcheckpoint一致をassertする。

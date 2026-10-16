@@ -335,13 +335,21 @@ fn budget_and_every_saved_stage_reproduce_identical_state() {
     let mut world = fixture(8);
     let layer = layer(&world);
     let water = cell(&world, "test:water");
+    let gas = cell(&world, "test:gas");
     world
         .edit(|edit| {
             edit.set_cell(layer, p(10, 10), water)?;
-            edit.set_cell(layer, p(10, 11), water)
+            edit.set_cell(layer, p(10, 11), water)?;
+            edit.set_channel(key("test:pressure"), p(13, 8), 100i64)?;
+            for point in [p(20, 20), p(30, 20)] {
+                edit.set_cell(layer, point, gas)?;
+                edit.set_channel(key("test:temperature"), point, 3i64 * 65536)?;
+            }
+            edit.set_cell(layer, p(40, 20), CellCore::AIR)?;
+            edit.set_cell(layer, p(41, 20), CellCore::AIR)
         })
         .unwrap();
-    let mut original = PressureJob::new(&world, layer, config()).unwrap();
+    let mut original = PressureJob::new(&world, layer, gas_config()).unwrap();
     let before = world.checkpoint(4_000_000).unwrap();
     let mut stages = 0;
     while original.status() != PressureJobStatus::Ready {
@@ -800,4 +808,111 @@ fn gas_properties_are_validated_fingerprinted_and_enforced() {
     }
     assert!(failed);
     assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+}
+
+// CHPRJOB3のnode境界を型codecで読み、訪問bitだけを書き換える回帰試験用の位置を得ます。
+fn saved_progress_offsets(data: &[u8]) -> (Vec<usize>, Vec<usize>) {
+    let mut input = Decoder::new(data, 2_000_000).unwrap();
+    assert_eq!(input.raw(8).unwrap(), b"CHPRJOB3");
+    WorldId::decode(&mut input).unwrap();
+    input.raw(32).unwrap();
+    input.u64().unwrap();
+    StableKey::decode(&mut input).unwrap();
+    StableKey::decode(&mut input).unwrap();
+    input.u16().unwrap();
+    input.u32().unwrap();
+    input.u32().unwrap();
+    if input.u8().unwrap() != 0 {
+        StableKey::decode(&mut input).unwrap();
+    }
+    Option::<StableKey>::decode(&mut input).unwrap();
+    for _ in 0..input.u32().unwrap() {
+        ChunkCoord::decode(&mut input).unwrap();
+        input.u64().unwrap();
+    }
+    let mut offsets = Vec::new();
+    for _ in 0..input.u32().unwrap() {
+        CellPoint::decode(&mut input).unwrap();
+        MaterialId::decode(&mut input).unwrap();
+        input.u8().unwrap();
+        input.u32().unwrap();
+        for _ in 0..3 {
+            input.i64().unwrap();
+        }
+        input.u8().unwrap();
+        input.u32().unwrap();
+        input.u32().unwrap();
+        input.i64().unwrap();
+        for _ in 0..4 {
+            Option::<u32>::decode(&mut input).unwrap();
+        }
+        offsets.push(data.len() - input.remaining());
+        input.u8().unwrap();
+        Option::<i64>::decode(&mut input).unwrap();
+        Option::<i64>::decode(&mut input).unwrap();
+        input.i64().unwrap();
+        input.i64().unwrap();
+    }
+    input.u8().unwrap();
+    input.u32().unwrap();
+    input.u32().unwrap();
+    let mut queue = Vec::new();
+    for _ in 0..input.u32().unwrap() {
+        queue.push(data.len() - input.remaining());
+        input.u32().unwrap();
+    }
+    (offsets, queue)
+}
+#[test]
+fn saved_seen_flags_cannot_skip_unprocessed_components() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let gas = cell(&world, "test:gas");
+    world
+        .edit(|edit| {
+            for point in [p(10, 10), p(20, 20)] {
+                edit.set_cell(layer, point, gas)?;
+                edit.set_channel(key("test:temperature"), point, 3i64 * 65536)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    for budget in [3, 8] {
+        let mut job = PressureJob::new(&world, layer, gas_config()).unwrap();
+        job.step(&world, budget).unwrap();
+        let mut data = bytes(&job);
+        let (offsets, _) = saved_progress_offsets(&data);
+        assert_eq!(data[offsets[1]], 0);
+        data[offsets[1]] = 1;
+        assert!(
+            decoded(&data).is_err(),
+            "未処理の別成分を訪問済みとするrecordを受理した"
+        );
+    }
+}
+
+#[test]
+fn saved_queue_must_follow_the_component_root_and_bfs_order() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let gas = cell(&world, "test:gas");
+    world
+        .edit(|edit| {
+            for point in [p(10, 10), p(11, 10), p(20, 20)] {
+                edit.set_cell(layer, point, gas)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut job = PressureJob::new(&world, layer, gas_config()).unwrap();
+    job.step(&world, 6).unwrap();
+    let mut data = bytes(&job);
+    let (_, queue) = saved_progress_offsets(&data);
+    assert_eq!(queue.len(), 2);
+    // 両nodeの訪問bitと件数を変えず、queueだけをrootと矛盾する順へ入れ替えます。
+    let first = data[queue[0]..queue[0] + 4].to_vec();
+    let second = data[queue[1]..queue[1] + 4].to_vec();
+    data[queue[0]..queue[0] + 4].copy_from_slice(&second);
+    data[queue[1]..queue[1] + 4].copy_from_slice(&first);
+    assert!(decoded(&data).is_err());
 }
