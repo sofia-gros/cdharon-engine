@@ -14,7 +14,7 @@
 
 位置は絶対座標の符号付きQ16、速度はQ16 cell/tick。負座標はEuclidean除算で所属cell・regionを決める。小さい変位も位置へ蓄積し、描画座標から逆算しない。
 
-`step_material_particles(candidate_limit, step_limit)`は活動regionの粒子をslot順に一phase進める。整数の交差積で境界到達順を比較するDDAを使い、斜めの同時交差はX側・Y側・斜め先を検査する。空cellだけを通過し、block・占有cell・World境界を飛び越えない。通過cellと角の検査cellをlayerごとに予約し、先行経路との交差は延期する。
+`step_material_particles(candidate_limit, step_limit)`は活動regionの粒子をslot順に一phase進める。整数の交差積で境界到達順を比較するDDAを使い、斜めの同時交差はX側・Y側・斜め先を検査する。空cellだけを通過し、block・占有cell・World境界を飛び越えない。phase開始時の全resident粒子の現在cellをlayer別に占有として索引化し、処理済みかどうかに依存させない。開始位置はその粒子が先へ進んでもphase中は解放しない。通過cellと角の検査cellも予約し、他粒子の開始位置・先行経路との交差は速度を保持して延期する。隣接粒子の正面衝突や追従で、処理順を理由に同じcellへ進入しない。
 
 障害に達したら最後の空cellで停止し、速度を0にして着地を試みる。複数cell進んだ停止位置は最後の空cellの中心、元のcell内で停止する場合は元の連続位置を保持する。未読込・非活動域・予約競合は速度を保持して待機する。未検査の整数距離を借金として積まない。非活動regionとarchiveの粒子は更新しない。0速度でも着地を再試行し、着地不能でも寿命で消さない。
 
@@ -22,7 +22,7 @@
 
 ## 着地と容量
 
-`land_material_particle(handle)`は現在cellが空で、全物質channelも既定値である場合にだけ所有権を返す。空cellに残る作者payloadを黙って捨てない。全channelの最終chunk数とWorld byte数、通常編集数を事前検査し、cell本体と全payloadの書戻し、粒子slotの解放を一つのWorld取引で行う。
+`emit_material_particle`は同じlayer・cellにresident粒子がある場合は拒否し、元cellと既存粒子の所有物を保持する。`land_material_particle(handle)`は現在cellが空で、他のresident粒子が同じlayer・cellに存在せず、全物質channelも既定値である場合にだけ所有権を返す。空cellに残る作者payloadを黙って捨てない。修正前の保存に重なった粒子がある場合も、他粒子の内部へ着地させず、待機または空き先への移動で両方を保持する。直接着地では他粒子を走査する。標準phaseでは開始位置の索引と経路予約を使い、各着地でpool全体を再走査する二乗費用を避ける。全channelの最終chunk数とWorld byte数、通常編集数を事前検査し、cell本体と全payloadの書戻し、粒子slotの解放を一つのWorld取引で行う。
 
 `WorldLimits.particles`がslot上限で、[08の既定profile](08_DATA_MODEL_AND_FORMATS.md#容量の基準)に従い262,144とする。`particle_bytes`がresidentのchannelキー・長さheader・値のcodec byte合計上限である。退避中もIDのslotは確保し、payload配列はarchiveへ移して解放する。slotのmetadata、Vecの管理領域、World候補の複製とcodec scratchはこのpayload byte数とは別の費用である。channelの容量と粒子容量は独立し、どちらも自動拡大しない。
 

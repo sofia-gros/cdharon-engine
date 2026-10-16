@@ -346,6 +346,18 @@ Windows/MSVC・Rust 1.98.1で対象24件、全346テスト成功。失敗・無�
 
 Windows/MSVC・Rust 1.98.1で全348テスト成功（失敗・無視なし）。lib109、assets24、foundation19、mixtures19、motion12、particles24、receipts15、transport25、pressure_job22、runtime28、world51。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終コードで全体検証を一度実行した。最新commitの実レビューとCIの確認はpush後に行う。
 
+### PR #10の追加P2：未処理粒子の開始位置の予約
+
+`ca2426e5170d0d9b161806fd6600814b1bd9d677`でCI10件は成功したが、[未処理粒子の現在位置も予約する指摘](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296932890)があり、original_commit_idで帰属を確認した。レビュー要約のcompleted表示を通過とは判定していない。
+
+phase開始時の全resident粒子のlayer・cellを一度だけ索引化し、未処理粒子の現在位置もDDAの通過点・角の検査で占有として扱う。先に動いた粒子の開始位置もphase中は解放しない。同じlayer・cellへの重複放出を拒否し、直接着地も別粒子へ重ならないよう確認する。旧保存に既存の重なりがある場合も一方の着地で他方を埋めず、待機または空き先への移動で両方の所有物を保持する。
+
+索引はfallibleな一括確保とソートを使い、経路中は二分探索する。活動粒子ゼロでは索引を確保しない。公開の直接着地はpoolを走査するが、標準phaseの着地は開始位置の索引と経路予約で安全性を保証し、各着地でpool全体を再走査する二乗費用を避ける。保存形式は変更しない。
+
+6件の回帰を追加した。対向粒子は両ID順・毎phase保存復帰で同じ位置とpayloadを維持する。追従は同phaseに空いた始点へ進入しない。斜めの角にいる未処理粒子、高速8方向の途中停止と保存復帰、同位置放出の失敗時rollback、旧保存の重なりで直接着地を拒否して両粒子を分離・着地できることも検証した。
+
+Windows/MSVC・Rust 1.98.1で粒子対象30件、全354テスト成功（失敗・無視なし）。直前の348件からparticles24が30となり、他の内訳は同じ。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終変更後に全体検証をまとめて1回実行した。push後の最新commitについて実レビューとCIを確認する。
+
 ### E05出口の未達
 
 | 必須項目 | 現在の判定 |

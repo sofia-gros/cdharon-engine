@@ -1194,3 +1194,276 @@ fn restored_particle_arena_capacity_must_equal_saved_world_capacity() {
         "外側容量より小さいarena容量も不整合として拒否する"
     );
 }
+
+#[test]
+fn opposing_particles_keep_both_sources_in_either_id_order_and_after_every_save() {
+    for reverse in [false, true] {
+        let (mut world, layer) = fixture(WorldLimits::default());
+        activate(&mut world);
+        let mut handles = BTreeMap::new();
+        let cell = material(&world, "test:sand");
+        world
+            .edit(|edit| {
+                for x in if reverse { [2, 1] } else { [1, 2] } {
+                    edit.set_cell(layer, p(x, 2), cell)?;
+                    let handle = edit.emit_material_particle(
+                        layer,
+                        p(x, 2),
+                        [if x == 1 { 65536 } else { -65536 }, 0],
+                    )?;
+                    edit.set_particle_channel(handle, key("test:energy"), x as u64 * 100)?;
+                    handles.insert(x, handle);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut resumed = restore(&world);
+        for _ in 0..4 {
+            for world in [&mut world, &mut resumed] {
+                let report = world
+                    .edit(|edit| edit.step_material_particles(2, 10))
+                    .unwrap();
+                assert_eq!((report.waiting, report.moved, report.landed), (2, 0, 0));
+                for (&x, &handle) in &handles {
+                    let particle = world.material_particle(handle).unwrap();
+                    assert_eq!(particle.cell(), p(x, 2));
+                    assert_eq!(
+                        world
+                            .particle_channel_value::<u64>(handle, key("test:energy"))
+                            .unwrap(),
+                        x as u64 * 100
+                    );
+                }
+            }
+            resumed = restore(&resumed);
+            assert_eq!(save(&world), save(&resumed));
+        }
+        world
+            .edit(|edit| {
+                for &handle in handles.values() {
+                    edit.set_particle_velocity(handle, [0, 0])?;
+                }
+                edit.step_material_particles(2, 10)
+            })
+            .unwrap();
+        assert_eq!(world.material_particles().count(), 0);
+        assert_eq!(value(&world, "test:energy", p(1, 2)), 100);
+        assert_eq!(value(&world, "test:energy", p(2, 2)), 200);
+    }
+}
+
+#[test]
+fn following_particles_cannot_take_a_source_vacated_in_the_same_phase() {
+    for reverse in [false, true] {
+        let (mut world, layer) = fixture(WorldLimits::default());
+        activate(&mut world);
+        let cell = material(&world, "test:sand");
+        let mut handles = BTreeMap::new();
+        world
+            .edit(|edit| {
+                for x in if reverse { [2, 1] } else { [1, 2] } {
+                    edit.set_cell(layer, p(x, 2), cell)?;
+                    handles.insert(
+                        x,
+                        edit.emit_material_particle(layer, p(x, 2), [2 * 65536, 0])?,
+                    );
+                }
+                Ok(())
+            })
+            .unwrap();
+        let report = world
+            .edit(|edit| edit.step_material_particles(2, 20))
+            .unwrap();
+        assert_eq!((report.waiting, report.moved), (1, 1));
+        assert_eq!(
+            world.material_particle(handles[&1]).unwrap().cell(),
+            p(1, 2)
+        );
+        assert_eq!(
+            world.material_particle(handles[&2]).unwrap().cell(),
+            p(4, 2)
+        );
+        world
+            .edit(|edit| edit.step_material_particles(2, 20))
+            .unwrap();
+        assert_eq!(
+            world.material_particle(handles[&1]).unwrap().cell(),
+            p(3, 2)
+        );
+        assert_eq!(
+            world.material_particle(handles[&2]).unwrap().cell(),
+            p(6, 2)
+        );
+    }
+}
+
+#[test]
+fn diagonal_particle_guard_respects_an_unprocessed_stationary_particle() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(1, 1));
+    place(&mut world, layer, p(2, 1));
+    let first = world
+        .edit(|edit| edit.emit_material_particle(layer, p(1, 1), [2 * 65536, 2 * 65536]))
+        .unwrap();
+    let second = world
+        .edit(|edit| edit.emit_material_particle(layer, p(2, 1), [0, 0]))
+        .unwrap();
+    let report = world
+        .edit(|edit| edit.step_material_particles(2, 20))
+        .unwrap();
+    assert_eq!((report.waiting, report.landed), (1, 1));
+    assert_eq!(world.material_particle(first).unwrap().cell(), p(1, 1));
+    assert!(world.material_particle(second).is_err());
+    assert_ne!(core(&world, layer, p(2, 1)), CellCore::AIR);
+}
+
+#[test]
+fn emission_into_a_particle_source_preserves_both_existing_owners() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    place(&mut world, layer, p(1, 1));
+    let handle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(1, 1), [0, 0]))
+        .unwrap();
+    place(&mut world, layer, p(1, 1));
+    let before = save(&world);
+    world
+        .edit(|edit| {
+            let _ = edit.emit_material_particle(layer, p(1, 1), [0, 0]);
+            Ok(())
+        })
+        .unwrap_err();
+    assert_eq!(save(&world), before);
+    assert_eq!(world.material_particles().count(), 1);
+    assert_eq!(
+        world
+            .particle_channel_value::<u64>(handle, key("test:energy"))
+            .unwrap(),
+        345
+    );
+    assert_eq!(value(&world, "test:energy", p(1, 1)), 345);
+}
+
+#[test]
+fn previously_overlapping_particles_cannot_land_over_one_another_or_disappear() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    activate(&mut world);
+    place(&mut world, layer, p(1, 1));
+    place(&mut world, layer, p(2, 1));
+    let first = world
+        .edit(|edit| edit.emit_material_particle(layer, p(1, 1), [0, 0]))
+        .unwrap();
+    let second = world
+        .edit(|edit| edit.emit_material_particle(layer, p(2, 1), [0, 0]))
+        .unwrap();
+    // 修正前に保存された重なりを再現します。payload・ID・保存容量は変更しません。
+    let mut encoded = Encoder::new(4096);
+    world
+        .material_particle(second)
+        .unwrap()
+        .encode(&mut encoded)
+        .unwrap();
+    let encoded = encoded.finish();
+    let mut input = Decoder::new(&encoded, encoded.len()).unwrap();
+    LayerId::decode(&mut input).unwrap();
+    CellCore::decode(&mut input).unwrap();
+    input.u64().unwrap();
+    let offset = encoded.len() - input.remaining();
+    let mut bytes = save(&world);
+    let start = bytes
+        .windows(encoded.len())
+        .position(|part| part == encoded)
+        .unwrap()
+        + offset;
+    for (axis, position) in world
+        .material_particle(first)
+        .unwrap()
+        .position_q16()
+        .into_iter()
+        .enumerate()
+    {
+        bytes[start + axis * 8..start + (axis + 1) * 8].copy_from_slice(&position.to_le_bytes());
+    }
+    let mut world = World::restore(
+        &bytes,
+        Arc::clone(world.content()),
+        WorldLimits::default(),
+        8_000_000,
+    )
+    .unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.land_material_particle(first))
+            .is_err()
+    );
+    assert_eq!(save(&world), bytes);
+    let report = world
+        .edit(|edit| edit.step_material_particles(2, 20))
+        .unwrap();
+    assert_eq!((report.waiting, report.landed), (2, 0));
+    assert_eq!(world.material_particles().count(), 2);
+    // 先行する粒子を空き先へ分ければ、残った粒子は次phaseに着地できます。
+    world
+        .edit(|edit| edit.set_particle_velocity(first, [2 * 65536, 0]))
+        .unwrap();
+    world
+        .edit(|edit| edit.step_material_particles(2, 20))
+        .unwrap();
+    world
+        .edit(|edit| edit.step_material_particles(2, 20))
+        .unwrap();
+    assert!(world.material_particle(second).is_err());
+    assert_eq!(value(&world, "test:energy", p(1, 1)), 345);
+    assert_eq!(
+        world
+            .particle_channel_value::<u64>(first, key("test:energy"))
+            .unwrap(),
+        345
+    );
+}
+
+#[test]
+fn fast_particles_stop_before_other_particle_sources_in_all_octants() {
+    for (dx, dy) in [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+    ] {
+        let (mut world, layer) = fixture(WorldLimits::default());
+        activate(&mut world);
+        let source = p(10, 10);
+        let obstacle = p(10 + 3 * dx, 10 + 3 * dy);
+        let stopped = p(10 + 2 * dx, 10 + 2 * dy);
+        place(&mut world, layer, source);
+        place(&mut world, layer, obstacle);
+        let first = world
+            .edit(|edit| {
+                edit.emit_material_particle(
+                    layer,
+                    source,
+                    [i64::from(dx) * 8 * 65536, i64::from(dy) * 8 * 65536],
+                )
+            })
+            .unwrap();
+        world
+            .edit(|edit| edit.emit_material_particle(layer, obstacle, [0, 0]))
+            .unwrap();
+        let report = world
+            .edit(|edit| edit.step_material_particles(2, 100))
+            .unwrap();
+        assert_eq!((report.waiting, report.landed), (1, 1));
+        assert_eq!(world.material_particle(first).unwrap().cell(), stopped);
+        world = restore(&world);
+        world
+            .edit(|edit| edit.step_material_particles(2, 100))
+            .unwrap();
+        assert_eq!(world.material_particles().count(), 0);
+        assert_eq!(value(&world, "test:energy", stopped), 345);
+        assert_eq!(value(&world, "test:energy", obstacle), 345);
+    }
+}

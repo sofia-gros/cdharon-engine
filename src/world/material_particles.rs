@@ -410,6 +410,11 @@ impl WorldEdit<'_> {
             if cell.block.is_some() || cell.core.material == MaterialId::AIR {
                 return Err(conflict("粒子へ移すcellが空またはblock個体"));
             }
+            if editor.world.particles.iter().any(|(_, particle)| {
+                !particle.is_archived() && particle.layer == layer && particle.cell() == point
+            }) {
+                return Err(conflict("放出先に別の物質粒子が存在"));
+            }
             let layer_key = editor.world.content.layer(layer)?.key;
             let channels = editor
                 .world
@@ -494,6 +499,23 @@ impl WorldEdit<'_> {
     /// 空cell上の作者状態を黙って捨てません。容量不足・失効は粒子を含め全体rollbackします。
     pub fn land_material_particle(&mut self, handle: MaterialParticleHandle) -> EngineResult<()> {
         self.run(|editor| {
+            let particle = editor.world.material_particle(handle)?;
+            if editor.world.particles.iter().any(|(id, other)| {
+                id != handle.id
+                    && !other.is_archived()
+                    && other.layer == particle.layer
+                    && other.cell() == particle.cell()
+            }) {
+                return Err(conflict("着地先に別の物質粒子が存在"));
+            }
+            editor.land_uncontested_particle(handle)
+        })
+    }
+
+    // 公開入口では他粒子を走査し、phase内では開始位置の索引と経路予約で同じ条件を保証します。
+    // phaseの全着地でpool全体を再走査する二乗費用を避け、payload検査と原子的変更は共用します。
+    fn land_uncontested_particle(&mut self, handle: MaterialParticleHandle) -> EngineResult<()> {
+        self.run(|editor| {
             let particle = editor.world.material_particle(handle)?.try_copy()?;
             if particle.dormant.is_some() {
                 return Err(conflict("退避粒子の着地"));
@@ -565,6 +587,16 @@ impl WorldEdit<'_> {
                     ids.push(id);
                 }
             }
+            // 未処理・非活動の粒子も現在位置を所有します。先行粒子が後続の始点を
+            // 奪わないよう、開始時の位置は移動後もこのphase中は解放しません。
+            if ids.is_empty() { return Ok(MaterialParticleReport::default()); }
+            let mut occupied = Vec::new();
+            occupied.try_reserve_exact(editor.world.particles.len()).map_err(allocation)?;
+            for (_, particle) in editor.world.particles.iter().filter(|(_, p)| !p.is_archived()) {
+                let point = particle.cell();
+                occupied.push((particle.layer.0, point.x, point.y));
+            }
+            occupied.sort_unstable();
             let mut reserved = std::collections::BTreeSet::new();
             let mut report = MaterialParticleReport::default();
             for id in ids {
@@ -606,7 +638,7 @@ impl WorldEdit<'_> {
                     if x && y { guards.push(CellPoint { x: next.x, y: current.y }); guards.push(CellPoint { x: current.x, y: next.y }); }
                     guards.push(next);
                     for point in &guards {
-                        if reserved.contains(&(layer.0, point.x, point.y)) { waiting = true; break; }
+                        if occupied.binary_search(&(layer.0, point.x, point.y)).is_ok() || reserved.contains(&(layer.0, point.x, point.y)) { waiting = true; break; }
                         match editor.world.cell(layer, *point)? {
                             CellQuery::WorldBoundary => { stopped = true; break; }
                             CellQuery::Loaded(cell) => {
@@ -636,8 +668,12 @@ impl WorldEdit<'_> {
                     let layer_key = editor.world.content.layer(layer)?.key;
                     let empty_payload = editor.world.channels.iter().filter(|c| c.material_layer() == Some(layer_key))
                         .try_fold(true, |empty, c| Ok::<_, EngineError>(empty && c.payload_is_default(current)?))?;
-                    if matches!(editor.world.cell(layer, current)?, CellQuery::Loaded(cell) if cell.core == CellCore::AIR && cell.block.is_none()) && empty_payload {
-                        editor.land_material_particle(handle)?;
+                    let source_key = (layer.0, source.x, source.y);
+                    let shared_source = current == source && occupied.partition_point(|key| *key <= source_key)
+                        - occupied.partition_point(|key| *key < source_key) > 1;
+                    if shared_source { report.waiting += 1; }
+                    if !shared_source && matches!(editor.world.cell(layer, current)?, CellQuery::Loaded(cell) if cell.core == CellCore::AIR && cell.block.is_none()) && empty_payload {
+                        editor.land_uncontested_particle(handle)?;
                         report.landed += 1;
                     }
                 }
