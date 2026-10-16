@@ -336,6 +336,16 @@ Windows/MSVC・Rust 1.98.1、`-j 2`、既存cacheの`--target-dir target/e01-val
 
 Windows/MSVC・Rust 1.98.1で対象24件、全346テスト成功。失敗・無視なし。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功した。変更のないツリーで全検査を繰り返さず、2件の修正後にまとめて実行した。push後の最新headへの再レビュー・CIを確認してから次の実装単位へ進む。
 
+### PR #10の追加P2：全管理情報を含む保存量の計数
+
+`48536bbf121231afff06345160f0ffcd046a94d8`の[lease arenaの保存上限不足](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296761521)をoriginal_commit_idで確認した。CI10件は成功していたが、指摘があるため完了扱いにしていない。
+
+概算の加算式を置き換え、World・Arena・StateStoreの通常保存と共通のcodecを、bufferを確保しない計数用Encoderで通す。leaseだけでなく、生成要求のReady page、Jobの途中page、blockの作者状態、全arenaのslot世代・free list、remap・archive・粒子payloadを同じ経路で数える。channelは各codecの登録上限を合算する。保存形式のbyte列は変えない。`checkpoint_limit`は現在の確定状態に対する上限となり、将来の変更後まで使い回さず再計算する。Runtimeは従来どおり保存直前に呼ぶ。計数の走査費用はあるが、完全snapshotの一時確保はしない。
+
+公開APIの回帰試験で、最大長キーのLoadOnly leaseを1,024件、World作者状態とblock状態を各128件、途中Jobと未完了生成要求を同時に保持し、算出上限で保存・復元して全管理状態を保持することを確認した。channelがない場合の算出量は実保存量と完全一致する。既存の生成Ready・block・途中Jobの保存試験にも同じ一致検査を追加した。64個の最大長channelと満杯の粒子poolの既存試験も通過した。計数Encoderのheader長・u32長上限と失敗時の不変性も検査した。
+
+Windows/MSVC・Rust 1.98.1で全348テスト成功（失敗・無視なし）。lib109、assets24、foundation19、mixtures19、motion12、particles24、receipts15、transport25、pressure_job22、runtime28、world51。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終コードで全体検証を一度実行した。最新commitの実レビューとCIの確認はpush後に行う。
+
 ### E05出口の未達
 
 | 必須項目 | 現在の判定 |

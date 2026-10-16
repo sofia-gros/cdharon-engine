@@ -30,7 +30,7 @@ pool・payload・着地先channel・編集予算・DDA予算の不足では外�
 
 ## 保存・退避・素材epoch
 
-World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena（生存record・世代・free list）を保存する。`CHWORLD1`も読め、粒子ゼロとして復元し、新しいpool容量には呼出側のcapsを使う。新版の保存容量はcapsと照合し、arenaの実容量とWorldの明示容量が等しいことも要求する。Runtimeが使う`checkpoint_limit`には、粒子payload内のキー・値の長さheaderを含むbyte予算と固定metadataに加え、各channelのcodec上限・World側のキーと長さheaderを合算する。RAMのchannel配列が0byteでも格子・既定値等の保存情報は省略しない。既存の`CHPUSH02`、`CHMIX001`、`CHPRJOB3`は変更しない。
+World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena（生存record・世代・free list）を保存する。`CHWORLD1`も読め、粒子ゼロとして復元し、新しいpool容量には呼出側のcapsを使う。新版の保存容量はcapsと照合し、arenaの実容量とWorldの明示容量が等しいことも要求する。Runtimeが使う`checkpoint_limit`は、実際のWorld保存と同じcodec経路で現在の必要量を計数する。地形・全arenaの世代とfree list・lease・生成要求・Jobの途中page・作者状態・block状態・remap・archive・粒子payloadを含む。channelは登録されたcodec上限とWorld側のキー・長さheaderを合算する。RAM配列が0byteでも保存情報を省略しない。計数は保存bufferを確保せず状態を変更しないが、地形・recordの走査が必要となる。将来の状態まで保証する容量ではないため、保存する確定状態ごとに再計算する。既存の`CHPUSH02`、`CHMIX001`、`CHPRJOB3`は変更しない。
 
 区域形式は`CHREGN02`。所属位置のregionと一緒に全粒子payloadを保存する。保存の再読込・hash照合後にだけresident payloadを解放し、World側にはID・位置・速度・素材epoch・archive hashを残す。保存中に速度だけを変更した場合も古いreceiptを拒否する。復帰ではID・世代・全metadata・所属・粒子件数を照合し、地形・channelと同時に戻す。`CHREGN01`は粒子ゼロとして読み込む。
 

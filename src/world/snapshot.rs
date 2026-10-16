@@ -30,11 +30,11 @@ impl StateCodec for BlockInstance {
         if let Some(hash) = self.dormant {
             out.raw(&hash)?;
         }
-        let properties = match &self.properties {
-            Some(store) => store.checkpoint()?,
-            None => super::terrain::copy_slice(&self.pending_properties)?,
-        };
-        out.bytes(&properties)?;
+        match &self.properties {
+            Some(store) if out.is_measuring() => out.measure_bytes(store.checkpoint_len()?)?,
+            Some(store) => out.bytes(&store.checkpoint()?)?,
+            None => out.bytes(&self.pending_properties)?,
+        }
         out.u8(match self.orientation {
             Orientation::Original => 0,
             Orientation::Right => 1,
@@ -373,91 +373,94 @@ pub(crate) fn decode_chunk_pages(
 }
 
 impl World {
-    /// Runtimeの保存入口が使う、設定容量から算出したsnapshotの最大byte数。
-    /// 地形・channel・Job・作者状態・個体metadataを含む保守的な上限です。
+    /// 現在の確定状態を保存するためのbyte上限を返します。
+    ///
+    /// 通常の保存と同じcodecを計数専用writerで通し、地形・全arena・作者状態・
+    /// remap・archiveの管理情報を含めます。channelのみ登録されたcodec上限を使います。
+    /// 保存bufferは確保しませんが、地形やrecordを走査する費用がかかります。
+    /// 状態が変化した後は再計算してください。
     pub fn checkpoint_limit(&self) -> EngineResult<usize> {
-        let mut total = 4096usize;
-        for size in [
-            self.limits.terrain_bytes,
-            self.limits.job_bytes,
-            self.limits.state_bytes,
-            self.limits.particle_bytes,
-            (self.limits.particles as usize)
-                .checked_mul(256)
-                .ok_or_else(|| invalid("粒子保存上限overflow"))?,
-        ] {
-            total = total
-                .checked_add(size)
-                .ok_or_else(|| invalid("World保存上限overflow"))?;
-        }
-        // channel_bytesはRAM上の値配列の予算です。既定値だけで配列が0byteでも
-        // channelごとのキー・格子・既定値・revisionは保存するため、codecの上限と
-        // World側のキー・payload長headerを別途合算します。粒子payload内の二つの
-        // 長さheaderはparticle_bytesへ既に計上しており、ここで二重計上しません。
-        for channel in &self.channels {
-            total = total
-                .checked_add(channel.checkpoint_limit())
-                .and_then(|n| n.checked_add(channel.key().as_str().len()))
-                .and_then(|n| n.checked_add(8))
-                .ok_or_else(|| invalid("channel保存上限overflow"))?;
-        }
-        let block = self
-            .limits
-            .block_state_bytes
-            .checked_add(4096)
-            .and_then(|size| size.checked_mul(self.limits.blocks as usize))
-            .ok_or_else(|| invalid("block保存上限overflow"))?;
-        total
-            .checked_add(block)
-            .and_then(|size| {
-                size.checked_add((self.limits.archived_chunks as usize).checked_mul(80)?)
-            })
-            .ok_or_else(|| invalid("World保存上限overflow"))
+        let mut out = Encoder::measuring();
+        self.encode_checkpoint(&mut out, usize::MAX)?;
+        Ok(out.written_len())
     }
 
     /// 全正規地形、allocator、lease、未完了要求を保存します。呼出側は確定tickで取得します。
     pub fn checkpoint(&self, byte_limit: usize) -> EngineResult<Vec<u8>> {
         self.validate()?;
         let mut out = Encoder::new(byte_limit);
+        self.encode_checkpoint(&mut out, byte_limit)?;
+        Ok(out.finish())
+    }
+
+    fn encode_checkpoint(&self, out: &mut Encoder, byte_limit: usize) -> EngineResult<()> {
         out.raw(b"CHWORLD2")?;
-        self.id.encode(&mut out)?;
+        self.id.encode(out)?;
         out.u64(self.seed)?;
         out.u64(self.tick)?;
         out.u64(self.revision)?;
-        self.bounds.encode(&mut out)?;
+        self.bounds.encode(out)?;
         out.raw(&self.content.fingerprint())?;
-        encode_limits(self.limits, &mut out)?;
+        encode_limits(self.limits, out)?;
         out.u32(self.chunks.len() as u32)?;
         for (coord, chunk) in &self.chunks {
-            coord.encode(&mut out)?;
+            coord.encode(out)?;
             out.u64(chunk.revision)?;
-            chunk.edited.encode(&mut out)?;
-            chunk.active.encode(&mut out)?;
-            chunk.generation.encode(&mut out)?;
+            chunk.edited.encode(out)?;
+            chunk.active.encode(out)?;
+            chunk.generation.encode(out)?;
             out.u64(chunk.epoch)?;
-            encode_chunk_pages(chunk, &mut out)?;
+            encode_chunk_pages(chunk, out)?;
         }
-        out.bytes(&self.blocks.checkpoint(byte_limit)?)?;
-        out.bytes(&self.leases.checkpoint(byte_limit)?)?;
-        out.bytes(&self.requests.checkpoint(byte_limit)?)?;
-        self.remaps.encode(&mut out)?;
+        if out.is_measuring() {
+            out.measure_bytes(self.blocks.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.blocks.checkpoint(byte_limit)?)?;
+        }
+        if out.is_measuring() {
+            out.measure_bytes(self.leases.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.leases.checkpoint(byte_limit)?)?;
+        }
+        if out.is_measuring() {
+            out.measure_bytes(self.requests.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.requests.checkpoint(byte_limit)?)?;
+        }
+        self.remaps.encode(out)?;
         out.u32(self.archived.len() as u32)?;
         for (coord, archive) in &self.archived {
-            coord.encode(&mut out)?;
+            coord.encode(out)?;
             out.raw(&archive.hash)?;
-            archive.region.encode(&mut out)?;
+            archive.region.encode(out)?;
         }
-        out.bytes(&self.jobs.checkpoint(byte_limit)?)?;
-        out.bytes(&self.state.checkpoint()?)?;
+        if out.is_measuring() {
+            out.measure_bytes(self.jobs.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.jobs.checkpoint(byte_limit)?)?;
+        }
+        if out.is_measuring() {
+            out.measure_bytes(self.state.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.state.checkpoint()?)?;
+        }
         out.u32(self.channels.len() as u32)?;
         for channel in &self.channels {
-            channel.key().encode(&mut out)?;
-            out.bytes(&channel.checkpoint()?)?;
+            channel.key().encode(out)?;
+            if out.is_measuring() {
+                out.measure_bytes(channel.checkpoint_limit().min(u32::MAX as usize))?;
+            } else {
+                out.bytes(&channel.checkpoint()?)?;
+            }
         }
         out.u32(self.limits.particles)?;
         out.u64(self.limits.particle_bytes as u64)?;
-        out.bytes(&self.particles.checkpoint(byte_limit)?)?;
-        Ok(out.finish())
+        if out.is_measuring() {
+            out.measure_bytes(self.particles.checkpoint_len()?)?;
+        } else {
+            out.bytes(&self.particles.checkpoint(byte_limit)?)?;
+        }
+        Ok(())
     }
     /// 必須定義と各容量を確認し、完全な候補だけを返します。既存Worldの書換えは行いません。
     pub fn restore(
