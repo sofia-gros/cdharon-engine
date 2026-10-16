@@ -185,3 +185,11 @@ Linuxクラウド環境・Rust 1.98.1、`CARGO_BUILD_JOBS=2`。
 初版commit`181da8e`をレビューへ出した後、22の気体式との追加照合で、targetの直接代入を重みlambda付きのJacobi緩和へ修正した。`GasPressureSource.relaxation_weight`を保存し、気体cellでは近傍の圧力・重力項と`lambda × target`を同時に評価する。閉じた液体だけに平均anchorを適用し、気体の最小座標をanchorへ固定しない。空間のtarget境界は派生値で、物質cellの前回圧を直接置き換えない。
 
 lambda0・1・3、隣接気体2cell、1反復の参照式を検査するテストを追加した。全294テスト成功（pressure_job 15、他の内訳は上と同じ）、fmt・全target check・警告拒否Clippy・Rustdoc成功。保存形式を`CHPRJOB2`へ更新し、初版recordを誤って現形式と解釈せず拒否する。旧recordの自動移行はない。作例と修正後の対象テストも再実行した。初版へのレビュー結果を、この修正を含むcommitのレビュー結果として扱わない。
+
+### PR #7のレビュー対応：空cell境界とlambda
+
+`99cb429`のCI20件はすべて成功したが、[空cell境界からtargetを注入してlambdaを迂回するP1](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4291060260)を指摘された。22の標準式を維持し、空cellの旧圧・固定境界を相対0に保つよう修正した。targetの加算経路を気体cellのlambda項に限り、空間量の集計と圧力の境界条件を混同しない。
+
+空cell2つと気体cell1つを連結し、lambda0・1・3で1反復の参照値を検査する回帰テストを追加した。同テストを修正前`99cb429`で実行し、lambda0の結果が期待0に対して131072となって失敗することを確認した。修正後は0・65536・98304で成功する。温度と容積の他の試験・作例も、target圧と公開される緩和後圧を区別して更新した。
+
+修正後は全295テスト成功（pressure_job 16、他の内訳は上と同じ）。fmt、全target check、警告拒否Clippy・Rustdoc成功。作例はtarget Q16=131072、lambda1・空境界0からの緩和後Q16=65536、計算48件と保存再開一致を確認した。保存recordの構造は`CHPRJOB2`のままで、古い誤ったscratchは復元後の決定的照合で拒否する。修正をpushして再レビューを確認するまで、本単位もレビュー完了とは判定しない。

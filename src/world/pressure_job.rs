@@ -472,8 +472,10 @@ impl PressureJob {
             3 if self.queue_cursor < self.queue.len() => {
                 let index = self.queue[self.queue_cursor] as usize;
                 let node = &mut self.nodes[index];
-                node.fixed = if node.input.kind == 0
-                    || node.input.surface
+                node.fixed = if node.input.kind == 0 {
+                    // 空間は相対圧0です。targetを近傍境界から注入するとlambda=0を迂回します。
+                    Some(0)
+                } else if node.input.surface
                     || (node.input.kind == 1 && index == self.root && !self.open)
                 {
                     Some(self.target)
@@ -485,10 +487,6 @@ impl PressureJob {
                 } else {
                     None
                 };
-                // 空間の圧力は派生境界としてtargetへ合わせ、正規channelには公開しません。
-                if node.input.kind == 0 {
-                    node.old = self.target;
-                }
                 self.queue_cursor += 1;
             }
             3 => {

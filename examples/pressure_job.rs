@@ -104,12 +104,12 @@ fn main() -> EngineResult<()> {
     world.edit(|edit| edit.publish_pressure_job(&job))?;
     resumed.edit(|edit| edit.publish_pressure_job(&restored))?;
     assert_eq!(world.checkpoint(1_000_000)?, resumed.checkpoint(1_000_000)?);
-    let expected = 2i64 * 65536;
+    let expected = 65536i64;
     assert!(
         matches!(resumed.channel_value::<i64>(key("example:pressure"),p(0,0))?,ChannelQuery::Loaded(value) if value==expected)
     );
     println!(
-        "気体mass2・温度3・容積3: 圧力Q16={}、{}件の計算と途中保存からの再開が一致",
+        "気体mass2・温度3・容積3・lambda1: target Q16=131072、空境界0からの緩和後Q16={}、{}件の計算と途中保存からの再開が一致",
         expected,
         job.completed_work()
     );

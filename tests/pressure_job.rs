@@ -231,9 +231,9 @@ fn legacy_profile_matches_scalar_for_every_budget_and_preserves_terrain() {
 #[test]
 fn gas_pressure_uses_connected_mass_temperature_and_available_volume() {
     for (volume, temperature, expected) in [
-        (3, 3, 2 * 65536),
-        (2, 3, 3 * 65536),
-        (3, 6, 4 * 65536),
+        (3, 3, 65536),
+        (2, 3, 3 * 65536 / 2),
+        (3, 6, 2 * 65536),
         (3, 0, 0),
     ] {
         let mut world = fixture(8);
@@ -284,7 +284,7 @@ fn gas_chambers_are_separate_and_liquids_do_not_count_as_gas_volume() {
     finish(&mut job, &world, 2);
     world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
     assert_eq!(pressure(&world, p(10, 10)), 2 * 65536);
-    assert_eq!(pressure(&world, p(20, 10)), 4 * 65536);
+    assert_eq!(pressure(&world, p(20, 10)), 2 * 65536);
 }
 #[test]
 fn pump_is_explicit_and_does_not_change_temperature_or_material() {
@@ -569,7 +569,7 @@ fn connected_gas_space_crosses_chunk_boundaries_without_using_inactive_cells() {
     world
         .edit(|edit| edit.publish_pressure_job(&connected))
         .unwrap();
-    assert_eq!(pressure(&world, p(63, 10)), 3 * 65536);
+    assert_eq!(pressure(&world, p(63, 10)), 3 * 65536 / 2);
 }
 #[test]
 fn finite_world_does_not_count_outside_partial_chunks_as_gas_volume() {
@@ -602,7 +602,7 @@ fn finite_world_does_not_count_outside_partial_chunks_as_gas_volume() {
     assert_eq!(job.sample_count(), 3);
     finish(&mut job, &world, 1);
     world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
-    assert_eq!(pressure(&world, p(10, 10)), 2 * 65536);
+    assert_eq!(pressure(&world, p(10, 10)), 65536);
 }
 
 #[test]
@@ -629,5 +629,31 @@ fn gas_target_is_relaxed_with_configured_lambda_instead_of_overwriting_pressure(
         for x in 10..12 {
             assert_eq!(pressure(&world, p(x, 10)), expected);
         }
+    }
+}
+
+#[test]
+fn air_stays_zero_and_cannot_bypass_gas_lambda() {
+    for (weight, expected) in [(0, 0), (1, 65536), (3, 3 * 65536 / 2)] {
+        let mut world = fixture(8);
+        let layer = layer(&world);
+        let gas = cell(&world, "test:gas");
+        world
+            .edit(|edit| {
+                edit.set_cell(layer, p(10, 10), gas)?;
+                edit.set_cell(layer, p(11, 10), CellCore::AIR)?;
+                edit.set_cell(layer, p(12, 10), CellCore::AIR)?;
+                edit.set_channel(key("test:temperature"), p(10, 10), 3i64 * 65536)
+            })
+            .unwrap();
+        let mut config = gas_config();
+        config.relaxation.iterations = 1;
+        config.gas.as_mut().unwrap().relaxation_weight = weight;
+        let mut job = PressureJob::new(&world, layer, config).unwrap();
+        finish(&mut job, &world, 1);
+        world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
+        assert_eq!(pressure(&world, p(10, 10)), expected);
+        assert_eq!(pressure(&world, p(11, 10)), 0);
+        assert_eq!(pressure(&world, p(12, 10)), 0);
     }
 }
