@@ -303,6 +303,9 @@ impl World {
         Ok(())
     }
     pub(crate) fn validate_particles(&self) -> EngineResult<()> {
+        if self.particles.capacity() != self.limits.particles {
+            return Err(invalid("粒子arenaとWorldのslot容量が不一致"));
+        }
         let mut bytes = 0usize;
         for (_, particle) in self.particles.iter() {
             self.validate_particle(particle)?;

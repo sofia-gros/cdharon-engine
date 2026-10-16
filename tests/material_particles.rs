@@ -1061,3 +1061,136 @@ fn particle_air_mapping_is_rejected_without_matching_live_particles() {
         assert_eq!(save(&world), before);
     }
 }
+
+#[test]
+fn runtime_checkpoint_limit_covers_many_channels_with_full_particle_pool() {
+    let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
+    registry
+        .layer(LayerDef {
+            key: key("test:layer"),
+            role: LayerRole::Terrain,
+            render_order: 0,
+            collision_group: 1,
+            simulated: true,
+        })
+        .unwrap();
+    registry
+        .register(MaterialBuilder::new("test:sand", MaterialBase::Powder).unwrap())
+        .unwrap();
+    registry
+        .schema(Schema::of::<u8>(key("test:byte"), 1, 1).unwrap())
+        .unwrap();
+    let mut payload_per_particle = 0usize;
+    for index in 0..64 {
+        let name = format!("{}:{index:02}{}", "x".repeat(96), "y".repeat(94));
+        payload_per_particle += name.len() + 8 + 1;
+        registry
+            .material_channel(
+                key("test:layer"),
+                ChannelDefinition {
+                    key: key(&name),
+                    version: 1,
+                    value_schema: key("test:byte"),
+                    layout: GridLayout {
+                        origin: p(0, 0),
+                        x_scale: GridScale::new(1, 1).unwrap(),
+                        y_scale: GridScale::new(1, 1).unwrap(),
+                    },
+                    default: 0u8,
+                    limits: GridLimits {
+                        chunks: 1,
+                        checkpoint_bytes: 4096,
+                    },
+                },
+            )
+            .unwrap();
+    }
+    let content = registry.freeze().unwrap();
+    let layer = content.layer_id(key("test:layer")).unwrap();
+    let sand = content
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    let limits = WorldLimits {
+        resident_chunks: 1,
+        active_chunks: 0,
+        archived_chunks: 0,
+        terrain_bytes: 4096 * 8,
+        channel_bytes: 0,
+        state_records: 1,
+        state_bytes: 0,
+        block_state_records: 1,
+        block_state_bytes: 0,
+        blocks: 1,
+        leases: 1,
+        requests: 1,
+        jobs: 1,
+        job_cells: 1,
+        job_bytes: 0,
+        remaps: 0,
+        edit_cells: 4096,
+        particles: 8,
+        particle_bytes: payload_per_particle * 8,
+    };
+    let mut world = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        0,
+        WorldBounds::expandable(),
+        content,
+        limits,
+    )
+    .unwrap();
+    world
+        .edit(|edit| {
+            edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+            for x in 0..8 {
+                edit.set_cell(
+                    layer,
+                    p(x, 0),
+                    CellCore {
+                        material: sand,
+                        ..CellCore::AIR
+                    },
+                )?;
+                edit.emit_material_particle(layer, p(x, 0), [0, 0])?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let generous = world.checkpoint(4_000_000).unwrap();
+    let limit = world.checkpoint_limit().unwrap();
+    assert!(
+        generous.len() <= limit,
+        "実際の保存{}byteを上限{}byteに含める",
+        generous.len(),
+        limit
+    );
+    let saved = world.checkpoint(limit).unwrap();
+    assert_eq!(saved, generous);
+    let restored = World::restore(&saved, Arc::clone(world.content()), limits, limit).unwrap();
+    assert_eq!(restored.material_particles().count(), 8);
+}
+
+#[test]
+fn restored_particle_arena_capacity_must_equal_saved_world_capacity() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    place(&mut world, layer, p(1, 1));
+    world
+        .edit(|edit| edit.emit_material_particle(layer, p(1, 1), [0, 0]))
+        .unwrap();
+    let mut bytes = save(&world);
+    let arena = bytes
+        .windows(8)
+        .rposition(|part| part == b"CHARNA01")
+        .unwrap();
+    bytes[arena + 8..arena + 12].copy_from_slice(&1u32.to_le_bytes());
+    assert!(
+        World::restore(
+            &bytes,
+            Arc::clone(world.content()),
+            WorldLimits::default(),
+            8_000_000
+        )
+        .is_err(),
+        "外側容量より小さいarena容量も不整合として拒否する"
+    );
+}

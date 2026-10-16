@@ -379,7 +379,6 @@ impl World {
         let mut total = 4096usize;
         for size in [
             self.limits.terrain_bytes,
-            self.limits.channel_bytes,
             self.limits.job_bytes,
             self.limits.state_bytes,
             self.limits.particle_bytes,
@@ -390,6 +389,17 @@ impl World {
             total = total
                 .checked_add(size)
                 .ok_or_else(|| invalid("World保存上限overflow"))?;
+        }
+        // channel_bytesはRAM上の値配列の予算です。既定値だけで配列が0byteでも
+        // channelごとのキー・格子・既定値・revisionは保存するため、codecの上限と
+        // World側のキー・payload長headerを別途合算します。粒子payload内の二つの
+        // 長さheaderはparticle_bytesへ既に計上しており、ここで二重計上しません。
+        for channel in &self.channels {
+            total = total
+                .checked_add(channel.checkpoint_limit())
+                .and_then(|n| n.checked_add(channel.key().as_str().len()))
+                .and_then(|n| n.checked_add(8))
+                .ok_or_else(|| invalid("channel保存上限overflow"))?;
         }
         let block = self
             .limits

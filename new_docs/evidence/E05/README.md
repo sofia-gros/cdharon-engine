@@ -327,6 +327,15 @@ Windows/MSVC・Rust 1.98.1、`-j 2`、既存cacheの`--target-dir target/e01-val
 
 合わせて、初期pool上限を08の既定profileで指定された262,144へ合わせた。保存済みWorldの容量を自動拡張する変更ではない。Windows/MSVC・Rust 1.98.1で対象22件、全344テストが成功し、失敗・無視なし。内訳は上記342件のparticles20が22となる。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功した。最新commitのpush後に再レビューとCIを確認するまで、本単位の対応完了とは判定しない。
 
+### PR #10の追加P2：保存上限とarena容量の整合
+
+`6253655e0ef8722c63c96aa5046e30f01909f1e0`のCI10件は成功したが、[多数channelのcheckpoint上限](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296665660)と[外側slot容量とarena容量の不一致](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296665666)を指摘された。original_commit_idで両方の帰属を照合した。
+
+- 64個の最大長キーの物質channelと、上限8個すべての粒子を持ち、他の容量を小さくした公開APIの試験で、実保存165,723byteに対し上限146,432byteとなる失敗を修正前に再現した。粒子payloadの8byteはキーと値の各4byte長を既に含む。実際の不足は、RAM配列が0byteでも保存するchannelのキー・格子・既定値・revision等である。Worldの上限はRAM用channel_bytesではなく、各channelのcodec byte上限とWorld側のキー・payload長を合算する。修正後は同じ上限APIで保存し、容量を満たしたまま復元して8粒子を保持する。
+- 外側の粒子容量を残したままCHARNA01内部の容量だけ1へ変更した保存が、修正前は受理された。Worldの不変条件に実arena容量と明示slot容量の完全一致を追加し、復元時と通常編集の検証で拒否する。保存形式はCHWORLD2を維持する。
+
+Windows/MSVC・Rust 1.98.1で対象24件、全346テスト成功。失敗・無視なし。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功した。変更のないツリーで全検査を繰り返さず、2件の修正後にまとめて実行した。push後の最新headへの再レビュー・CIを確認してから次の実装単位へ進む。
+
 ### E05出口の未達
 
 | 必須項目 | 現在の判定 |

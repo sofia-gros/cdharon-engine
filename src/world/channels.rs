@@ -49,6 +49,7 @@ pub(crate) trait ChannelState: Send + Sync {
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn try_copy(&self) -> EngineResult<Box<dyn ChannelState>>;
     fn checkpoint(&self) -> EngineResult<Vec<u8>>;
+    fn checkpoint_limit(&self) -> usize;
     fn bytes(&self) -> usize;
     fn validate(&self, world: &World) -> EngineResult<()>;
     fn extract(&self, region: ChunkRegion) -> EngineResult<Vec<u8>>;
@@ -311,6 +312,9 @@ impl<T: GridValue + Send + Sync + 'static> ChannelState for Storage<T> {
     }
     fn checkpoint(&self) -> EngineResult<Vec<u8>> {
         self.grid.checkpoint()
+    }
+    fn checkpoint_limit(&self) -> usize {
+        self.definition.0.limits.checkpoint_bytes
     }
     fn bytes(&self) -> usize {
         self.grid.allocated_chunks() * 4096 * size_of::<T>()
