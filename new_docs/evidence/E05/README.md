@@ -260,4 +260,4 @@ Worldの固定キーへのtyped・encoded書込みで型とWorld/Contentを検�
 
 Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全318テスト成功（混合物17、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocと混合分離の保存再開作例が成功した。
 
-この再開時にはGitHub APIが401 Bad credentialsとなり、Gitの既存設定での`ls-remote`も認証入力を要求して失敗した。環境statusに利用可能なGitHub認証bindingは示されなかった。ローカル修正後のpush・最新CI・再レビュー・指摘返信は未実施であり、認証復旧後にこのcommitをpushして同じPRで継続する。レビュー完了と見なさず、次の実装単位とマージには進めない。E05全体は未完了、E06は未着手である。
+この再開直後にはGitHub APIが401、Gitのreadが認証入力エラーとなったが、ローカル検証後のpushは成功し、APIの再試行でもPRのhead更新を確認できた。一時的な失敗として認証の追加設定は不要だった。最新CI・再レビュー・指摘返信を続け、完了と見なすのは実結果確認後とする。E05全体は未完了、E06は未着手である。
