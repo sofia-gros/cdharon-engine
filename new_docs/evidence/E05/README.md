@@ -147,3 +147,35 @@ Linux / Rust 1.98.1、`CARGO_BUILD_JOBS=2`で次を実行した。
 これはcell表現のreceiptであり、raw編集・生成器・全providerの監視、粒子・剛体local cell・退避領域・reservoirを合わせた総量の参照比較ではない。外部に永続化したreceiptの整理、非cell表現のbridge、熱energyの収支も残る。保存recordは既存StateStoreへ含め、World・区域archiveの構造は変更しない。新規schemaでContent manifestが変わることと、既存保存の自動互換を混同しない。
 
 E05全体・Q04は引き続き未通過。混合・分離、正規粒子とpool、全体収支、気体source・広域圧力、dirty/sleep、物性・provider統合を残してE06へ進まない。
+
+## PR #6のレビュー確認と継続指示
+
+[PR #6](https://github.com/sofia-gros/charon-engine/pull/6)の対象commitは`01ba6facf1bbe98cc7ce9cf5054e1c6db73ce4ce`。CI20件すべて成功し、[対象commitへのレビュー結果](https://github.com/sofia-gros/charon-engine/pull/6#issuecomment-6208143360)が2026-10-16 13:33 JSTに追加された。「重大な問題は見つからなかった」との結果を確認し、次の単位へ進んだ。
+
+その後のユーザー指示により、E05全体の出口条件を満たし、CI・レビューに問題がなければマージし、その後E06へ進む。E05未達を残して先行マージ・E06着手を行わない。
+
+## 気体sourceと広域圧力job
+
+`codex/e05-wide-pressure`を`01ba6fa`から分けた。[33の契約](../../33_WIDE_PRESSURE.md)と`examples/pressure_job.rs`を追加した。
+
+- `PressureJob`が隣接構築、連結探索、連結量の反映、Jacobi反復とbuffer切替を固定件数で進める。途中の圧力を公開しない。
+- 気体profileは気体・空cellの連結容積と気体mass・絶対温度から圧力sourceを計算する。液体と気体の連結を分離し、活動外・未読込・block・World境界をno-flowとする。
+- 作者のポンプchannelを流体cellの最低圧境界にできる。圧力の指定だけで物質やenergyを発行・消去しない。
+- 入力scope・Content・epoch・活動集合とrevisionを照合し、完成後に全出力を原子的に公開する。channelの解放容量を先に再利用する。
+- 保存recordを復元した場合は、入力の再採取と決定的再計算でscratchを照合する。計算再実行もstep予算を使い、未照合のReadyを公開しない。
+
+### ローカルレビューと検証
+
+ローカルレビューで、有限Worldの部分chunkの外を容積から除外すること、探索queueの全件走査をstageの一件処理に含めないこと、公開時に全反復をやり直さないこと、復元状態を照合する前の公開を禁止することを確認・修正した。通常stepでfrontierを複製せず、new・公開・保存・復元の一括費用と復元照合用の追加scratch・再計算費用は33へ明記した。
+
+Linuxクラウド環境・Rust 1.98.1、`CARGO_BUILD_JOBS=2`。
+
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked`、`cargo clippy --all-targets --locked -- -D warnings`、`RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`：成功。
+- `cargo test --locked`：全293テスト成功。lib/host 107、assets 24、foundation 19、material_motion 12、material_receipts 15、material_transport 24、pressure_job 14、runtime 28、world 50。失敗・無視なし。doc-testは0件。
+- `cargo run --locked --example pressure_job`：mass2・温度3・容積3でQ16圧力131072、計算48件。途中保存からの再開と連続実行のcheckpoint一致をassertで確認した。
+
+追加14テストで、従来solverとの保存byte一致、予算1・3・65536、全段階のcodec復元、Worldとjobの同時保存、温度と容積、連結の分離、chunk境界、非活動域、有限境界、ポンプ、入力失効、負値・数値上限、scratch容量・channel容量、無視されたエラーを含むrollback、切断・診断量改変を検査した。3 OSのE05 workflowへ対象テストと作例を追加した。
+
+### 残作業
+
+広域圧力jobとsourceのAPI追加は、混合・分離、正規物質粒子とpool、全表現の収支、dirty/sleep、物性とproviderの統合を完了するものではない。初期採取・最終公開まで一定時間で分割するschedulerも別途費用設計が必要である。E05全体・Q04は引き続き未通過。commit/push・PRの実レビューを確認し、指摘へ対応してから次の実装単位へ進む。
