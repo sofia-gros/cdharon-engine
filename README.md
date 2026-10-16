@@ -29,7 +29,7 @@ E03の初回実装は全168件のテスト、整形、全ターゲットのコ�
 
 E2・E3とE4のPR指摘対応を取り込んだE04は、旧変更を含まないツリーの全224件のテスト、整形、全target check、警告拒否Clippy、Rustdoc、保存復帰の作例を通過しています。
 
-E05の輸送・圧力部分は[PR #4](https://github.com/sofia-gros/charon-engine/pull/4)のレビューで、空cellの出口圧、channel確保前の容量検査と圧力出力の容量再利用、探索frontierのstepごとの全複製を修正しました。Linux・Rust 1.98.1で全252テスト、整形、全target check、警告拒否Clippy・Rustdocを通過しています。E05全体とQ04は未完了です。詳細は[E05の検証記録](new_docs/evidence/E05/README.md)を参照してください。
+E05の輸送・圧力部分は[PR #4](https://github.com/sofia-gros/charon-engine/pull/4)のレビューで、空cellの出口圧、channel確保前の容量検査と圧力出力の容量再利用、探索frontierのstepごとの全複製を修正しました。Linux・Rust 1.98.1で全252テスト、整形、全target check、警告拒否Clippy・Rustdocを通過しています。押出し探索は毎phaseの保存・復元でも照合進捗を保持し、旧保存形式の読込みにも対応します。E05全体とQ04は未完了です。詳細は[E05の検証記録](new_docs/evidence/E05/README.md)を参照してください。
 
 次のE05単位として[速度・端数と格子経路検査](new_docs/31_MATERIAL_MOTION.md)を追加し、Linux・Rust 1.98.1で全264テストと品質チェック、headless作例を検証しました。一般形状の衝突、力の積分とprovider統合、混合・物質粒子などは残作業です。E05全体・Q04は引き続き未完了です。
 
