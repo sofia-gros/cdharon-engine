@@ -278,6 +278,30 @@ impl World {
             }
         }
         let coords = self.chunks.keys().copied().collect::<Vec<_>>();
+        // 粒子はterrainから独立した所有先です。退避中のpayloadは触らず、復帰時に
+        // 同じepoch列を適用します。空気への変更は全payloadの消費ruleが必要なため拒否します。
+        let particle_owner = StableKey::parse("engine:particles")?;
+        let particle_ids = self
+            .particles
+            .iter()
+            .filter(|(_, p)| !p.is_archived())
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        for id in particle_ids {
+            let particle = self.particles.get(id)?;
+            let target = self.remapped(
+                particle_owner,
+                particle.layer,
+                particle.epoch,
+                particle.core.material,
+            )?;
+            if target == MaterialId::AIR {
+                return Err(invalid("粒子を空へremapするには明示的な消費ruleが必要"));
+            }
+            let particle = self.particles.get_mut(id)?;
+            particle.core.material = target;
+            particle.epoch = current;
+        }
         for coord in coords {
             let epoch = self.chunks[&coord].epoch;
             if epoch == current {

@@ -382,6 +382,10 @@ impl World {
             self.limits.channel_bytes,
             self.limits.job_bytes,
             self.limits.state_bytes,
+            self.limits.particle_bytes,
+            (self.limits.particles as usize)
+                .checked_mul(256)
+                .ok_or_else(|| invalid("粒子保存上限overflow"))?,
         ] {
             total = total
                 .checked_add(size)
@@ -405,7 +409,7 @@ impl World {
     pub fn checkpoint(&self, byte_limit: usize) -> EngineResult<Vec<u8>> {
         self.validate()?;
         let mut out = Encoder::new(byte_limit);
-        out.raw(b"CHWORLD1")?;
+        out.raw(b"CHWORLD2")?;
         self.id.encode(&mut out)?;
         out.u64(self.seed)?;
         out.u64(self.tick)?;
@@ -440,6 +444,9 @@ impl World {
             channel.key().encode(&mut out)?;
             out.bytes(&channel.checkpoint()?)?;
         }
+        out.u32(self.limits.particles)?;
+        out.u64(self.limits.particle_bytes as u64)?;
+        out.bytes(&self.particles.checkpoint(byte_limit)?)?;
         Ok(out.finish())
     }
     /// 必須定義と各容量を確認し、完全な候補だけを返します。既存Worldの書換えは行いません。
@@ -450,7 +457,9 @@ impl World {
         byte_limit: usize,
     ) -> EngineResult<Self> {
         let mut input = Decoder::new(bytes, byte_limit)?;
-        if input.raw(8)? != b"CHWORLD1" {
+        let format = input.raw(8)?;
+        let with_particles = format == b"CHWORLD2";
+        if !with_particles && format != b"CHWORLD1" {
             return Err(invalid("World保存形式"));
         }
         let id = WorldId::decode(&mut input)?;
@@ -468,7 +477,11 @@ impl World {
                 "保存したContentの定義と不一致",
             ));
         }
-        let limits = decode_limits(&mut input)?;
+        let mut limits = decode_limits(&mut input)?;
+        // 旧版に粒子は存在しません。新しい容量は呼出側の上限から採用し、
+        // 新版では末尾の明示容量とarenaのallocatorを合わせて復元します。
+        limits.particles = caps.particles;
+        limits.particle_bytes = caps.particle_bytes;
         validate_caps(limits, caps)?;
         let mut world = World::new(id, seed, bounds, content, limits)?;
         world.tick = tick;
@@ -547,6 +560,14 @@ impl World {
                 .channels
                 .push(factory.restore(input.bytes(byte_limit)?)?);
         }
+        if with_particles {
+            world.limits.particles = input.u32()?;
+            world.limits.particle_bytes =
+                usize::try_from(input.u64()?).map_err(|_| invalid("保存粒子byte容量"))?;
+            validate_caps(world.limits, caps)?;
+            world.particles =
+                Arena::restore(input.bytes(byte_limit)?, world.limits.particles, byte_limit)?;
+        }
         input.finish()?;
         world.connect_block_states()?;
         world.validate()?;
@@ -598,10 +619,22 @@ fn decode_limits(input: &mut Decoder<'_>) -> EngineResult<WorldLimits> {
         job_bytes: usize::try_from(input.u64()?).map_err(|_| invalid("保存Job byte数"))?,
         remaps: input.u32()?,
         edit_cells: usize::try_from(input.u64()?).map_err(|_| invalid("保存編集cell数"))?,
+        particles: WorldLimits::default().particles,
+        particle_bytes: WorldLimits::default().particle_bytes,
     })
 }
 fn validate_caps(value: WorldLimits, caps: WorldLimits) -> EngineResult<()> {
     for (name, value, cap) in [
+        (
+            "粒子数",
+            u64::from(value.particles),
+            u64::from(caps.particles),
+        ),
+        (
+            "粒子byte数",
+            value.particle_bytes as u64,
+            caps.particle_bytes as u64,
+        ),
         ("Job数", u64::from(value.jobs), u64::from(caps.jobs)),
         ("Job cell数", value.job_cells as u64, caps.job_cells as u64),
         ("Job byte数", value.job_bytes as u64, caps.job_bytes as u64),

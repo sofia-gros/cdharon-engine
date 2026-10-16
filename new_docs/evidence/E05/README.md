@@ -283,3 +283,51 @@ Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全320テスト成功（混合物19�
 新形式は照合済みReady・NoOutletを復元直後も保持するため、既存試験のReady期待値を更新した。旧形式の再照合・予算共有も継続して検証する。新payloadは4byte増え、schemaのbyte上限は自動で増えない。30に形式・費用・進捗値と実地形監査の違いを記録した。
 
 Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全322テスト成功（lib/host108、material_transport25、他は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocが成功した。広域圧力作例も成功した。作例名を誤って`material_transport`として一度実行したコマンドは対象不存在で失敗し、存在する`pressure_job`で確認し直した。公開APIの押出し保存再開そのものは新しい回帰試験で検証している。最新commitのCI・外部レビューはPR提出後に確認する。E05全体は未完了である。
+
+## ローカルへの引継ぎとPR #9のP2対応
+
+2026-10-17（日本時間）、`A:/Project/charon-engine`で再開した。元のE04ブランチの追跡済み変更15ファイルと未追跡1ファイル（計16件）を、`local-before-e05-cloud-handoff-20261017`というstash（`1c1f742397a082da2556c52b45fd2f9b3d0cdafa`）へ保護した。元のoriginは保持し、指定リポジトリを`handoff` remoteとして追加した。fetch後の`codex/e05-push-resume`のHEADが`5ba1c92c14757cee67e42dc5ae5145ebde31ca72`に一致することを確認した。Cloud固有のCARGO_HOME/RUSTUP_HOMEは設定していない。ローカルのRust/Cargoは1.98.1である。
+
+[READMEのP2](https://github.com/sofia-gros/charon-engine/pull/9#discussion_r4293732418)は、REST APIの`original_commit_id`でも上記`5ba1c92`への指摘と照合した。`a9d7a4490b9976cc8962a4fb9b25de0fa23e1ccf`で252件をPR #4時点の履歴と明示し、押出し修正の最新322件・品質検査成功をREADMEへ反映してpushした。[対応結果を回答](https://github.com/sofia-gros/charon-engine/pull/9#discussion_r4296298930)し、スレッドを解決した。
+
+同headの[実レビュー結果](https://github.com/sofia-gros/charon-engine/pull/9#issuecomment-6218825222)で対象commitと重大な指摘なしを確認した。要約のcompleted表示だけで判断していない。[Rust CI](https://github.com/sofia-gros/charon-engine/actions/runs/38923773560)、[E03](https://github.com/sofia-gros/charon-engine/actions/runs/38923773546)、[E04](https://github.com/sofia-gros/charon-engine/actions/runs/38923773587)、[E05](https://github.com/sofia-gros/charon-engine/actions/runs/38923773734)の計10ジョブすべて成功。READMEのみの修正なので全検査は重複実行せず、Windowsで`pressure_push_progress_survives_a_fresh_state_read_each_phase`の1件を実行して成功した。E05全体未完了のためPR #4〜#9はマージしていない。
+
+## 正規物質粒子の実装単位
+
+`codex/e05-material-particles`をPR #9の確認済みheadから分けた。[35の公開契約](../../35_MATERIAL_PARTICLES.md)に、所有権・単位・費用・失敗時の保持と保存移行を記載した。
+
+- 一cell分のtokenとflags/variation・全物質channelを粒子へ移し、空きcellへの着地時に戻す。位置固定場は保持し、block個体の暗黙分解を拒否する。
+- Q16の連続位置と速度、整数DDA、同時交差の両直交cell検査、layer別の通過予約、未準備域の待機、非活動域の凍結を追加した。着地不能でも寿命で消さない。
+- pool slot・全payload byte・着地channel・編集・DDA予算不足で外側取引をrollbackする。エラーを無視しても入力を失わない。作者の型付きpayload更新も同じ取引へ接続した。
+- 粒子の所属regionを現在位置から決め、地形と一緒にpayloadを退避・復帰する。退避後はmetadataとslotだけ保持する。保存中の速度変更でも古い退避receiptを拒否し、復帰時はID・世代・全metadata・所属と件数を照合する。
+- World形式はCHWORLD2、区域形式はCHREGN02へ更新した。CHWORLD1・CHREGN01は粒子ゼロとして読める。押出し・混合・圧力jobの形式は維持する。素材ownerはengine:particlesで、archiveの未適用epochは復帰時に処理する。
+
+### ローカルレビュー
+
+辞書キー・長さheaderもparticle_bytesへ計上して、値が小さいchannelを多数登録した場合の保存上限の過小計算を防いだ。着地失敗後に0速度となった粒子も再試行し、空cellに作者payloadが残る場合は上書きしない。復帰時はcell単位の位置だけでなくQ16位置・速度もmetadataと比較する。元のcell内で停止する場合に端数位置を中心へ戻さないようにした。
+
+### 粒子単位の最終ローカル検証
+
+Windows/MSVC・Rust 1.98.1、`-j 2`、既存cacheの`--target-dir target/e01-validation`を使用した。Cドライブの空きが約278MiBのため、TEMP/TMPだけをプロセス内で`A:/Project/charon-engine/target/e05-build-tmp`へ指定した。Cloudのhome設定は移植していない。
+
+- `cargo fmt --all -- --check`：成功。
+- `cargo check --all-targets --locked`：成功。
+- `cargo clippy --all-targets --locked -- -D warnings`：成功。
+- `cargo test --locked`：全342テスト成功、失敗・無視なし。内訳はlib/host108、assets24、foundation19、mixtures19、motion12、particles20、receipts15、transport25、pressure_job22、runtime28、world50。doc-testは0件。
+- `RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps`：成功。
+- `cargo run --locked --example material_particles`：成功。energy=900のまま放出・途中保存・壁直前の着地を行い、連続実行とcheckpointが一致した。
+
+最後のコード変更後に全検査をまとめて実行した。未実装の全体収支・provider・Q04を、この342件で検証済みとは扱わない。GitHubの3 OS CI・実レビューはpushとPR提出後に確認する。
+
+### E05出口の未達
+
+| 必須項目 | 現在の判定 |
+| --- | --- |
+| 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。外部レビューとCIは提出後に確認する |
+| resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | 未完了。混合成分・理由付きreceiptを含めた全表現の保存監査が必要 |
+| 重力・抗力・浮力・摩擦と標準／独自provider統合 | 未完了。型付き状態更新の入口だけで統合済みとしない |
+| 広域移動の保存可能な継続Job | 未完了。phaseの件数超過rollbackを継続処理としない |
+| dirty/sleep・wake依存とscalar参照のtick比較 | 未完了 |
+| 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
+
+E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、E06へ進まず停止する。
