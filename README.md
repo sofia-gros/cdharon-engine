@@ -37,7 +37,7 @@ cellの発行・消費・変換と[理由付きreceipt](new_docs/32_MATERIAL_REC
 
 [気体sourceと広域圧力job](new_docs/33_WIDE_PRESSURE.md)も追加しました。温度・連結空間・素材別の係数とlambda・圧力上限・ポンプ境界を明示し、予算付きの計算後に全圧力を一括公開します。毎phaseの状態復元でも進捗を維持し、Linuxで全301テストと品質検査を通過しました。混合のprovider統合・粒子・全体収支・dirty/sleep・物性とprovider統合は残り、E05全体・Q04は未完了です。
 
-[混合・分離](new_docs/34_MATERIAL_MIXTURES.md)では、整数比率の共有組成と有理数の成分量を使い、cell・全payload・組成参照と理由付きreceiptを同時に保存します。古い共有storeの書き戻しによる定義・履歴の巻き戻しを拒否し、参照indexの再利用を防ぎます。Linuxで全318テストと品質検査、保存再開の作例を通過しました。全表現の収支、物質粒子、dirty/sleep、provider統合は引き続きE05の残作業です。
+[混合・分離](new_docs/34_MATERIAL_MIXTURES.md)では、整数比率の共有組成と有理数の成分量を使い、cell・全payload・組成参照と理由付きreceiptを同時に保存します。汎用書き戻しによる共有storeとjournalの履歴変更を拒否し、参照indexの再利用や分岐Worldからの履歴持込みを防ぎます。Linuxで全320テストと品質検査、保存再開の作例を通過しました。全表現の収支、物質粒子、dirty/sleep、provider統合は引き続きE05の残作業です。
 
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 

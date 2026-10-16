@@ -441,7 +441,7 @@ impl MixtureStore {
             .map(Some)
             .ok_or_else(|| invalid("混合参照のindex"))
     }
-    /// 固定キーへの書戻しでも既存indexと履歴を保持し、古いsnapshotによる巻戻しを拒否します。
+    /// 固定キーへの書戻しでも既存indexと履歴を保持し、専用取引以外からの履歴変更を拒否します。
     pub(super) fn validate_replacement(&self, world: &World) -> EngineResult<()> {
         self.scope(world)?;
         if world
@@ -451,11 +451,11 @@ impl MixtureStore {
         {
             let current = world.state::<Self>(Self::key())?;
             current.scope(world)?;
-            if !self.entries.starts_with(&current.entries)
-                || !self.receipts.starts_with(&current.receipts)
-            {
-                return Err(conflict("混合storeの既存定義または履歴の巻戻し"));
+            if self.entries != current.entries || self.receipts != current.receipts {
+                return Err(conflict("混合storeの専用取引外での定義または履歴変更"));
             }
+        } else if !self.entries.is_empty() || !self.receipts.is_empty() {
+            return Err(conflict("混合storeの非空状態での初期化"));
         }
         Ok(())
     }
@@ -673,7 +673,7 @@ impl WorldEdit<'_> {
                 world: Some(store.world),
                 index: store.entries.len() as u32,
             };
-            editor.set_state(MixtureStore::key(), schema, &store)?;
+            editor.set_material_state(MixtureStore::key(), schema, &store)?;
             Ok(reference)
         })
     }
@@ -768,7 +768,7 @@ impl WorldEdit<'_> {
                 conservation,
                 changes: refs,
             });
-            editor.set_state(MixtureStore::key(), config.schema, &store)?;
+            editor.set_material_state(MixtureStore::key(), config.schema, &store)?;
             Ok(receipt)
         })
     }

@@ -8,7 +8,7 @@ E05内の混合・分離API。物質粒子や剛体を含む全体収支、標�
 
 一つのWorldで`MixtureStore::key()`（`engine:material-mixtures`）に共有storeを作り、`MixtureRef`だけを1対1の物質channelへ置く。参照にはWorld IDとappend順のindexを持ち、別Worldと範囲外indexを拒否する。`MixtureRef::NONE`は純物質・空cellの一意な値。組成storeには質量所有権がなく、同じ組成を何cellが共有しても、定義の登録だけで物質は増えない。
 
-定義を削除・再利用しないため、区域archive内の古い参照も有効なまま残る。標準APIは使用中storeの再初期化を拒否する。Worldの汎用`set_state`と内部のencoded書込みでも固定キーの型を照合し、現在の全定義・witnessが同じ順序のprefixとして残ることを同じ取引内で要求する。先に作った空storeや古いsnapshotで既存定義・履歴を巻き戻すことはできない。容量変更と追記は許す。完全checkpointの復元は世界全体の復元であり、この差分書戻しとは別の操作になる。`entries`・一組成の`components`・変換履歴の`receipts`上限を明示し、枠不足では定義や物質を自動破棄しない。容量は既存データを失わない範囲で変更できるが、schema・Worldのbyte上限は独立して残る。
+定義を削除・再利用しないため、区域archive内の古い参照も有効なまま残る。標準APIは使用中storeの再初期化を拒否する。Worldの汎用`set_state`と内部のencoded書込みでも固定キーの型を照合し、現在の全定義・witnessと完全一致することを同じ取引内で要求する。先に作った空storeや古いsnapshotで既存定義・履歴を巻き戻すことはできない。汎用書戻しは容量変更だけを許し、定義・witness追記は`register_mixture`・`apply_mixture_changes`の専用取引で行う。参照先のMaterialReceiptLogも汎用書戻しで履歴を変えられず、cell変更と同じ取引でのみ追記する。別Worldの分岐から同じIDで履歴だけを持ち込む操作も拒否する。完全checkpointの復元は世界全体の復元であり、この差分書戻しとは別の操作になる。`entries`・一組成の`components`・変換履歴の`receipts`上限を明示し、枠不足では定義や物質を自動破棄しない。容量は既存データを失わない範囲で変更できるが、schema・Worldのbyte上限は独立して残る。
 
 ## carrierと成分量
 
@@ -61,7 +61,7 @@ KeepChannelsは各点の物質payloadを保持し、ResetChannelsは各定義の
 
 参照channelは通常の物質輸送・World保存・区域退避に従う。共有storeはWorld状態に残す。区域を退避して参照channel配列を回収しても組成は失わず、復帰後の参照が再び解決できる。
 
-通常操作はStateStoreのrecord復元・候補複製と組成検査、全入出力の成分列挙と安定整列、journal追記と既存履歴の再保存を含む参照実装である。固定キーへの書戻しでは現recordの再decodeと定義・witnessのprefix比較も行う。組成数・履歴数・変更cell数・成分種類数とcodec byte容量に依存し、定義を登録する処理をcell毎のhot kernelとして呼ばない。cell上の参照自体は固定長で、各cellへHashMapやBoxを置かない。
+通常操作はStateStoreのrecord復元・候補複製と組成検査、全入出力の成分列挙と安定整列、journal追記と既存履歴の再保存を含む参照実装である。固定キーへの書戻しでは現recordの再decodeと定義・witnessの完全比較も行う。組成数・履歴数・変更cell数・成分種類数とcodec byte容量に依存し、定義を登録する処理をcell毎のhot kernelとして呼ばない。cell上の参照自体は固定長で、各cellへHashMapやBoxを置かない。
 
 `MixtureStore::validate_world`はjournalを種類ごとに一度読み、過去のcell変更とwitness、成分保存方針を監査する全履歴処理である。現在の全cell・粒子・剛体・reservoir・archiveの総量を集計するAPIではない。raw編集・生成器・独自providerの自動監視も行わない。全表現収支とprovider認定はE05の残作業として続ける。
 

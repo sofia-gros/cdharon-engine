@@ -1094,3 +1094,75 @@ fn second_prepared_store_cannot_reset_an_installed_store() {
     let store: MixtureStore = world.state(MixtureStore::key()).unwrap();
     assert_eq!(store.resolve(reference).unwrap().unwrap(), &state(1, 1));
 }
+
+#[test]
+fn journal_snapshot_cannot_remove_witness_targets() {
+    let mut world = world();
+    let reference = reference(&mut world);
+    seed(&mut world);
+    let stale: MaterialReceiptLog = world.state(config().journal.key).unwrap();
+    mix(&mut world, reference);
+    let before = world.checkpoint(4_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.set_state(config().journal.key, config().journal.schema, &stale))
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    let mut current: MaterialReceiptLog = world.state(config().journal.key).unwrap();
+    current.set_capacity(64).unwrap();
+    world
+        .edit(|edit| edit.set_state(config().journal.key, config().journal.schema, &current))
+        .unwrap();
+    world
+        .state::<MixtureStore>(MixtureStore::key())
+        .unwrap()
+        .validate_world(&world)
+        .unwrap();
+}
+
+#[test]
+fn branched_world_cannot_import_uncommitted_history_or_definitions() {
+    let mut world = world();
+    let reference = reference(&mut world);
+    seed(&mut world);
+    let before = world.checkpoint(4_000_000).unwrap();
+    let mut branch = World::restore(
+        &before,
+        Arc::clone(world.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    mix(&mut branch, reference);
+    let store: MixtureStore = branch.state(MixtureStore::key()).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.set_state(MixtureStore::key(), config().schema, &store))
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    let journal: MaterialReceiptLog = branch.state(config().journal.key).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.set_state(config().journal.key, config().journal.schema, &journal))
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    branch
+        .edit(|edit| edit.register_mixture(config().schema, &state(2, 1)))
+        .unwrap();
+    let definitions: MixtureStore = branch.state(MixtureStore::key()).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.set_state(MixtureStore::key(), config().schema, &definitions))
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    mix(&mut world, reference);
+    world
+        .state::<MixtureStore>(MixtureStore::key())
+        .unwrap()
+        .validate_world(&world)
+        .unwrap();
+}

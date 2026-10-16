@@ -261,3 +261,13 @@ Worldの固定キーへのtyped・encoded書込みで型とWorld/Contentを検�
 Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全318テスト成功（混合物17、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocと混合分離の保存再開作例が成功した。
 
 この再開直後にはGitHub APIが401、Gitのreadが認証入力エラーとなったが、ローカル検証後のpushは成功し、APIの再試行でもPRのhead更新を確認できた。一時的な失敗として認証の追加設定は不要だった。最新CI・再レビュー・指摘返信を続け、完了と見なすのは実結果確認後とする。E05全体は未完了、E06は未着手である。
+
+### PR #8の追加P1：journalと分岐履歴の書戻し
+
+`1faeea5`のCI10件は全成功したが、再レビューで[journalの巻戻し](https://github.com/sofia-gros/charon-engine/pull/8#discussion_r4293579504)と[分岐Worldのwitness追記](https://github.com/sofia-gros/charon-engine/pull/8#discussion_r4293579511)を指摘された。prefix保持だけでは、対応receiptが現Worldにない履歴を追記できる。最初の再レビュー実行はサービスのUnknown errorで終了し、再依頼した実行の実指摘に対応した。
+
+汎用typed・encoded書込みではMixtureStoreの定義・witnessとMaterialReceiptLogのreceipt列を現在の全履歴と完全比較し、初回は空履歴だけを受理する。容量変更は許す。定義と履歴の追記は公開commandから呼べない専用内部経路へ移し、登録またはcell編集の同じ候補内だけで実行する。全checkpoint復元はこの差分書戻しとは別の経路である。
+
+journal snapshotの受理を修正前の失敗で確認した。修正後は古いjournal、分岐Worldのwitness・journal・定義の持込み、容量変更と拒否後の正常な混合を検証する。既存receipt試験3件も、不整合を保存後に検出する想定から、保存自体の拒否と世界の不変を検証する形へ更新した。
+
+Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全320テスト成功（混合物19、receipt15、他は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdoc・保存再開作例が成功した。CHMIX001とreceiptの保存形式は変えない。最新commitのCI・再レビューはpush後に確認する。E05全体とQ04は未完了である。

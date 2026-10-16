@@ -178,8 +178,30 @@ impl WorldEdit<'_> {
                 input.finish()?;
                 value.validate_replacement(editor.world)?;
             }
+            let definition = editor.world.content.schemas.get(schema)?;
+            if definition.is::<super::MaterialReceiptLog>() {
+                let mut input = Decoder::new(&payload, definition.max_bytes())?;
+                let value = super::MaterialReceiptLog::decode(&mut input)?;
+                input.finish()?;
+                value.validate_replacement(editor.world, key)?;
+            }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put_encoded(key, schema, payload)?;
+            transaction.commit()?;
+            Ok(())
+        })
+    }
+
+    /// 検証済みの物質取引だけが定義・履歴を更新します。公開APIやruntime commandは通しません。
+    pub(super) fn set_material_state<T: StateCodec + 'static>(
+        &mut self,
+        key: StableKey,
+        schema: StableKey,
+        value: &T,
+    ) -> EngineResult<()> {
+        self.run(|editor| {
+            let mut transaction = editor.world.state.transaction()?;
+            transaction.put(key, schema, value)?;
             transaction.commit()?;
             Ok(())
         })
@@ -199,6 +221,11 @@ impl WorldEdit<'_> {
                     .downcast_ref::<super::MixtureStore>()
                     .ok_or_else(|| EngineError::new(ErrorCode::SchemaMismatch, "混合storeの型"))?;
                 mixture.validate_replacement(editor.world)?;
+            }
+            if let Some(log) =
+                (value as &dyn std::any::Any).downcast_ref::<super::MaterialReceiptLog>()
+            {
+                log.validate_replacement(editor.world, key)?;
             }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put(key, schema, value)?;
