@@ -21,11 +21,6 @@ pub struct GasPressureSource {
     /// 気体cellの絶対温度Q16を保存したi64の1対1 channel。負値は拒否します。
     /// 位置固定・同layerの物質追従のどちらも使えます。
     pub temperature: StableKey,
-    /// `floor(Σ(mass * temperature_q16) * coefficient_q16 / (volume * 65536))`。
-    /// volumeは活動中の連結した気体・空cell数。0係数は圧力源を無効化します。
-    pub coefficient_q16: u32,
-    /// 気体cellのJacobi分母・分子へ加えるtargetの重みlambda。0なら直接の緩和源は無効です。
-    pub relaxation_weight: u32,
 }
 
 /// 広域計算の入力。設定はjobとともに保存され、途中で暗黙に変更されません。
@@ -61,6 +56,9 @@ struct Input {
     temperature: i64,
     pump: i64,
     surface: bool,
+    coefficient: u32,
+    weight: u32,
+    maximum: i64,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Node {
@@ -77,7 +75,7 @@ struct Node {
 ///
 /// 入力は全活動chunkのrevisionで保守的に失効させます。入力採取は全活動地形の走査、
 /// 各stepには別途活動集合の照合費用があります。stepの予算をwall-clock上限とはしません。
-/// 完成したjobの公開は全入力と計算結果を再検査する一括取引です。
+/// 完成したjobの公開は全入力と最終容量を再検査する一括取引です。
 pub struct PressureJob {
     world: WorldId,
     content: [u8; 32],
@@ -100,9 +98,6 @@ pub struct PressureJob {
     iteration: u16,
     work: u64,
     report: PressureRelaxationReport,
-    // 復元したscratchは公開前に予算付きの独立再計算で照合します。
-    verified: bool,
-    verification: Vec<PressureJob>,
 }
 
 impl PressureJob {
@@ -183,6 +178,9 @@ impl PressureJob {
                         }
                     }
                 }
+                let properties = definition
+                    .and_then(|material| material.gas_pressure())
+                    .unwrap_or_default();
                 let input = Input {
                     point,
                     material,
@@ -208,7 +206,25 @@ impl PressureJob {
                             .unwrap_or(0)
                     },
                     surface,
+                    coefficient: if kind == 2 {
+                        properties.coefficient_q16
+                    } else {
+                        0
+                    },
+                    weight: if kind == 2 {
+                        properties.relaxation_weight
+                    } else {
+                        0
+                    },
+                    maximum: if kind == 2 {
+                        properties.maximum_q16
+                    } else {
+                        i64::MAX
+                    },
                 };
+                if input.pressure > input.maximum {
+                    return Err(invalid("気体の保存圧力が素材上限を超過"));
+                }
                 nodes.try_reserve(1).map_err(allocation)?;
                 nodes.push(Node {
                     input,
@@ -250,14 +266,12 @@ impl PressureJob {
             iteration: 0,
             work: 0,
             report,
-            verified: true,
-            verification: Vec::new(),
         })
     }
 
     /// 完成前はComputing、全反復後はReadyです。
     pub fn status(&self) -> PressureJobStatus {
-        if self.stage == 5 && self.verified {
+        if self.stage == 5 {
             PressureJobStatus::Ready
         } else {
             PressureJobStatus::Computing
@@ -286,10 +300,6 @@ impl PressureJob {
     pub fn step(&mut self, world: &World, budget: usize) -> EngineResult<PressureJobStatus> {
         self.validate_context(world)?;
         for _ in 0..budget {
-            if !self.verified {
-                self.verify_unit(world)?;
-                continue;
-            }
             if self.stage == 5 {
                 break;
             }
@@ -300,53 +310,6 @@ impl PressureJob {
                 .ok_or_else(|| invalid("広域圧力の仕事量上限"))?;
         }
         Ok(self.status())
-    }
-    // 復元後だけ、保存時点までの決定的計算を再実行します。入力採取と最終配列照合は
-    // 一括費用ですが、計算の再実行はstep予算を消費します。通常のstepでは複製しません。
-    fn verify_unit(&mut self, world: &World) -> EngineResult<()> {
-        if self.verification.is_empty() {
-            let checked = Self::new(world, world.content.layer_id(self.layer)?, self.config)?;
-            if checked.chunks != self.chunks
-                || checked.nodes.len() != self.nodes.len()
-                || checked
-                    .nodes
-                    .iter()
-                    .zip(&self.nodes)
-                    .any(|(a, b)| a.input != b.input)
-            {
-                return Err(conflict("復元した広域圧力の入力が不一致"));
-            }
-            self.verification.try_reserve_exact(1).map_err(allocation)?;
-            self.verification.push(checked);
-        }
-        let checked = &mut self.verification[0];
-        if checked.work < self.work {
-            if checked.stage == 5 {
-                return Err(invalid("広域圧力の保存仕事量が過大"));
-            }
-            checked.unit()?;
-            checked.work += 1;
-            return Ok(());
-        }
-        if self.nodes != checked.nodes
-            || self.stage != checked.stage
-            || self.cursor != checked.cursor
-            || self.root != checked.root
-            || self.queue != checked.queue
-            || self.queue_cursor != checked.queue_cursor
-            || self.total_pressure != checked.total_pressure
-            || self.total_gas != checked.total_gas
-            || self.open != checked.open
-            || self.has_gas != checked.has_gas
-            || self.target != checked.target
-            || self.iteration != checked.iteration
-            || self.report != checked.report
-        {
-            return Err(conflict("復元した広域圧力の計算状態が不一致"));
-        }
-        self.verification.clear();
-        self.verified = true;
-        Ok(())
     }
     fn validate_context(&self, world: &World) -> EngineResult<()> {
         if self.world != world.id {
@@ -415,9 +378,14 @@ impl PressureJob {
             2 if self.queue_cursor < self.queue.len() => {
                 let index = self.queue[self.queue_cursor] as usize;
                 let node = self.nodes[index];
+                // u32質量×非負i64温度×u32係数は127bit以内です。領域全体の合計は別に検査します。
                 let gas = self
                     .total_gas
-                    .checked_add(u128::from(node.input.mass) * node.input.temperature as u128)
+                    .checked_add(
+                        u128::from(node.input.mass)
+                            * node.input.temperature as u128
+                            * u128::from(node.input.coefficient),
+                    )
                     .ok_or_else(|| invalid("気体温度質量の積算上限"))?;
                 let pressure = self
                     .total_pressure
@@ -444,15 +412,7 @@ impl PressureJob {
                             .map_err(|_| invalid("閉領域圧力上限"))?
                     }
                 } else {
-                    let gas = self
-                        .config
-                        .gas
-                        .ok_or_else(|| invalid("気体profileの欠落"))?;
-                    let numerator = self
-                        .total_gas
-                        .checked_mul(u128::from(gas.coefficient_q16))
-                        .ok_or_else(|| invalid("気体sourceの積上限"))?;
-                    i64::try_from(numerator / (self.queue.len() as u128 * 65536))
+                    i64::try_from(self.total_gas / (self.queue.len() as u128 * 65536))
                         .map_err(|_| invalid("気体sourceのi64上限"))?
                 };
                 self.target = target;
@@ -512,12 +472,7 @@ impl PressureJob {
                         count += 1;
                     }
                     if let Some(source) = node.source {
-                        let weight = i128::from(
-                            self.config
-                                .gas
-                                .ok_or_else(|| invalid("気体sourceの設定"))?
-                                .relaxation_weight,
-                        );
+                        let weight = i128::from(node.input.weight);
                         sum += weight * i128::from(source);
                         count += weight;
                     }
@@ -528,7 +483,11 @@ impl PressureJob {
                             .map_err(|_| invalid("広域圧力のi64上限"))?
                     }
                 };
-                self.nodes[self.cursor].next = pressure.max(node.input.pump);
+                let value = pressure.max(node.input.pump);
+                if value > node.input.maximum {
+                    return Err(invalid("素材の圧力上限"));
+                }
+                self.nodes[self.cursor].next = value;
                 self.cursor += 1;
             }
             4 => {
@@ -557,7 +516,7 @@ impl PressureJob {
 }
 
 impl WorldEdit<'_> {
-    /// 完成したjobを、入力・計算結果・最終容量の再検査後に一括公開します。
+    /// 完成したjobを、入力・最終容量の再検査後に一括公開します。
     /// 失敗を無視しても外側の編集全体が破棄されます。公開後のrevisionで二重公開も拒否します。
     pub fn publish_pressure_job(
         &mut self,
@@ -569,8 +528,8 @@ impl WorldEdit<'_> {
                 return Err(conflict("未完成の広域圧力"));
             }
             let layer = editor.world.content.layer_id(job.layer)?;
-            // 公開時は入力の完全性を再検査します。復元後の計算状態の照合は
-            // step予算内で既に完了しており、ここで全反復をやり直しません。
+            // 復元を含め入力の完全性を再検査します。保存された数値状態は正規状態として
+            // 継続し、過去の全反復をやり直しません。保存buffer自体の整合は保存層が扱います。
             let checked = PressureJob::new(editor.world, layer, job.config)?;
             if checked.nodes.len() != job.nodes.len()
                 || checked
@@ -660,7 +619,7 @@ fn active_empty(world: &World, layer: LayerId, point: CellPoint) -> EngineResult
 
 impl StateCodec for PressureJob {
     fn encode(&self, out: &mut Encoder) -> EngineResult<()> {
-        out.raw(b"CHPRJOB2")?;
+        out.raw(b"CHPRJOB3")?;
         self.world.encode(out)?;
         out.raw(&self.content)?;
         out.u64(self.epoch)?;
@@ -672,8 +631,6 @@ impl StateCodec for PressureJob {
         out.u8(u8::from(self.config.gas.is_some()))?;
         if let Some(gas) = self.config.gas {
             gas.temperature.encode(out)?;
-            out.u32(gas.coefficient_q16)?;
-            out.u32(gas.relaxation_weight)?;
         }
         self.config.pump.encode(out)?;
         out.u32(self.chunks.len() as u32)?;
@@ -692,6 +649,9 @@ impl StateCodec for PressureJob {
             out.i64(input.temperature)?;
             out.i64(input.pump)?;
             out.u8(u8::from(input.surface))?;
+            out.u32(input.coefficient)?;
+            out.u32(input.weight)?;
+            out.i64(input.maximum)?;
             for edge in node.edges {
                 edge.encode(out)?;
             }
@@ -721,7 +681,7 @@ impl StateCodec for PressureJob {
         out.u32(self.report.closed_components as u32)
     }
     fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
-        if input.raw(8)? != b"CHPRJOB2" {
+        if input.raw(8)? != b"CHPRJOB3" {
             return Err(invalid("広域圧力recordのmagic"));
         }
         let world = WorldId::decode(input)?;
@@ -740,8 +700,6 @@ impl StateCodec for PressureJob {
         let gas = if boolean(input)? {
             Some(GasPressureSource {
                 temperature: StableKey::decode(input)?,
-                coefficient_q16: input.u32()?,
-                relaxation_weight: input.u32()?,
             })
         } else {
             None
@@ -768,6 +726,9 @@ impl StateCodec for PressureJob {
             let temperature = input.i64()?;
             let pump = input.i64()?;
             let surface = boolean(input)?;
+            let coefficient = input.u32()?;
+            let weight = input.u32()?;
+            let maximum = input.i64()?;
             let mut edges = [None; 4];
             for edge in &mut edges {
                 *edge = Option::<u32>::decode(input)?;
@@ -783,6 +744,18 @@ impl StateCodec for PressureJob {
                     .any(|value| *value < 0)
                 || fixed.is_some_and(|value| value < 0)
                 || source.is_some_and(|value| value < 0)
+                || maximum < 0
+                || (kind == 2
+                    && (pressure > maximum || old > maximum || next > maximum || fixed.is_some()))
+                || (kind != 2
+                    && (coefficient != 0 || weight != 0 || maximum != i64::MAX || source.is_some()))
+                || (kind != 2 && temperature != 0)
+                || (kind == 0
+                    && (pressure != 0
+                        || old != 0
+                        || next != 0
+                        || pump != 0
+                        || fixed.is_some_and(|value| value != 0)))
                 || edges.iter().flatten().any(|index| *index as usize >= count)
                 || (kind == 0 && (material != MaterialId::AIR || mass != 0))
                 || (kind != 0 && (material == MaterialId::AIR || mass == 0))
@@ -799,6 +772,9 @@ impl StateCodec for PressureJob {
                     temperature,
                     pump,
                     surface,
+                    coefficient,
+                    weight,
+                    maximum,
                 },
                 edges,
                 seen,
@@ -852,11 +828,34 @@ impl StateCodec for PressureJob {
             })
             || chunks.windows(2).any(|pair| pair[0].0 >= pair[1].0)
             || report.cells != nodes.iter().filter(|node| node.input.kind != 0).count()
+            || report
+                .open_components
+                .checked_add(report.closed_components)
+                .is_none_or(|total| total > report.cells)
             || (gas.is_none() && nodes.iter().any(|node| node.input.kind != 1))
             || (stage == 5 && iteration != relaxation.iterations)
             || ((stage == 2 || stage == 3) && queue.is_empty())
         {
             return Err(invalid("広域圧力の保存進捗"));
+        }
+        // 保存された隣接索引も座標と分類から照合し、非隣接・欠落した辺を再開しません。
+        for (index, node) in nodes.iter().enumerate() {
+            let mut expected = [None; 4];
+            if stage != 0 || index < cursor {
+                for (edge, (dx, dy)) in NEIGHBORS.into_iter().enumerate() {
+                    if let Some(point) = offset(node.input.point, dx, dy)
+                        && let Ok(other) = nodes.binary_search_by_key(&(point.x, point.y), |node| {
+                            (node.input.point.x, node.input.point.y)
+                        })
+                        && ((node.input.kind == 1) == (nodes[other].input.kind == 1))
+                    {
+                        expected[edge] = Some(other as u32);
+                    }
+                }
+            }
+            if node.edges != expected {
+                return Err(invalid("広域圧力の保存隣接索引"));
+            }
         }
         // queue内の重複は探索費用と合計を壊すため、確保済みのbit列で一度検査します。
         let mut seen = Vec::new();
@@ -867,6 +866,9 @@ impl StateCodec for PressureJob {
                 return Err(invalid("広域圧力queueの重複"));
             }
             seen[*index as usize] = true;
+            if !nodes[*index as usize].seen {
+                return Err(invalid("広域圧力queueの訪問状態"));
+            }
         }
         Ok(Self {
             world,
@@ -893,8 +895,6 @@ impl StateCodec for PressureJob {
             iteration,
             work,
             report,
-            verified: false,
-            verification: Vec::new(),
         })
     }
 }

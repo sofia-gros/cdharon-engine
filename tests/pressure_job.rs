@@ -17,6 +17,12 @@ fn p(x: i32, y: i32) -> CellPoint {
     CellPoint { x, y }
 }
 fn content(pressure_chunks: u32) -> Arc<Content> {
+    content_with_properties(pressure_chunks, GasPressureProperties::default())
+}
+fn content_with_properties(
+    pressure_chunks: u32,
+    properties: GasPressureProperties,
+) -> Arc<Content> {
     let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
     registry
         .layer(LayerDef {
@@ -32,14 +38,29 @@ fn content(pressure_chunks: u32) -> Arc<Content> {
         ("test:water", MaterialBase::Liquid, 5),
         ("test:gas", MaterialBase::Gas, 2),
     ] {
+        let builder = MaterialBuilder::new(name, base)
+            .unwrap()
+            .mass_per_cell(mass);
         registry
-            .register(
-                MaterialBuilder::new(name, base)
-                    .unwrap()
-                    .mass_per_cell(mass),
-            )
+            .register(if base == MaterialBase::Gas {
+                builder.gas_pressure(properties)
+            } else {
+                builder
+            })
             .unwrap();
     }
+    registry
+        .register(
+            MaterialBuilder::new("test:other-gas", MaterialBase::Gas)
+                .unwrap()
+                .mass_per_cell(2)
+                .gas_pressure(GasPressureProperties {
+                    relaxation_weight: 3,
+                    ..GasPressureProperties::default()
+                }),
+        )
+        .unwrap();
+
     registry
         .schema(Schema::of::<i64>(key("test:i64"), 1, 8).unwrap())
         .unwrap();
@@ -81,11 +102,14 @@ fn cell(world: &World, name: &str) -> CellCore {
     }
 }
 fn fixture(pressure_chunks: u32) -> World {
+    fixture_with_properties(pressure_chunks, GasPressureProperties::default())
+}
+fn fixture_with_properties(pressure_chunks: u32, properties: GasPressureProperties) -> World {
     let mut world = World::new(
         WorldId::from_parts(1, 1).unwrap(),
         9,
         WorldBounds::expandable(),
-        content(pressure_chunks),
+        content_with_properties(pressure_chunks, properties),
         WorldLimits::default(),
     )
     .unwrap();
@@ -129,8 +153,6 @@ fn gas_config() -> PressureJobConfig {
     PressureJobConfig {
         gas: Some(GasPressureSource {
             temperature: key("test:temperature"),
-            coefficient_q16: 65536,
-            relaxation_weight: 1,
         }),
         ..config()
     }
@@ -328,12 +350,8 @@ fn budget_and_every_saved_stage_reproduce_identical_state() {
         assert_eq!(original.completed_work(), work + 1);
         assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
         let saved = bytes(&original);
-        let mut restored = decoded(&saved).unwrap();
-        assert_eq!(restored.status(), PressureJobStatus::Computing);
-        // 復元後の照合も一件予算で、保存時点を超えて計算を進めず照合を完了できます。
-        for _ in 0..work + 2 {
-            restored.step(&world, 1).unwrap();
-        }
+        let restored = decoded(&saved).unwrap();
+        assert_eq!(restored.status(), original.status());
         assert_eq!(restored.completed_work(), original.completed_work());
         assert_eq!(bytes(&restored), saved);
         stages += 1;
@@ -445,7 +463,7 @@ fn capacities_do_not_publish_partial_results() {
     assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
 }
 #[test]
-fn malformed_records_and_changed_scratch_cannot_publish() {
+fn malformed_records_and_impossible_reports_are_rejected() {
     let mut world = fixture(8);
     let layer = layer(&world);
     let gas = cell(&world, "test:gas");
@@ -461,26 +479,11 @@ fn malformed_records_and_changed_scratch_cannot_publish() {
     for end in 0..data.len() {
         assert!(decoded(&data[..end]).is_err());
     }
-    // 最後の診断量は形式上の整数として読めても、再計算との一致なしには公開しません。
+    // 流体一cellより大きい閉領域数は構造上不正です。数値状態の計算履歴を再演しません。
     let mut changed = data.clone();
     let at = changed.len() - 4;
     changed[at..].copy_from_slice(&2u32.to_le_bytes());
-    let mut restored = decoded(&changed).unwrap();
-    let before = world.checkpoint(4_000_000).unwrap();
-    let mut failed = false;
-    for _ in 0..1000 {
-        if restored.step(&world, 1).is_err() {
-            failed = true;
-            break;
-        }
-    }
-    assert!(failed);
-    assert!(
-        world
-            .edit(|edit| edit.publish_pressure_job(&restored))
-            .is_err()
-    );
-    assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
+    assert!(decoded(&changed).is_err());
 }
 #[test]
 fn empty_activity_and_empty_gas_space_finish_without_fluid_output() {
@@ -608,7 +611,13 @@ fn finite_world_does_not_count_outside_partial_chunks_as_gas_volume() {
 #[test]
 fn gas_target_is_relaxed_with_configured_lambda_instead_of_overwriting_pressure() {
     for (weight, expected) in [(0, 0), (1, 3 * 65536), (3, 9 * 65536 / 2)] {
-        let mut world = fixture(8);
+        let mut world = fixture_with_properties(
+            8,
+            GasPressureProperties {
+                relaxation_weight: weight,
+                ..GasPressureProperties::default()
+            },
+        );
         let layer = layer(&world);
         let gas = cell(&world, "test:gas");
         world
@@ -622,7 +631,6 @@ fn gas_target_is_relaxed_with_configured_lambda_instead_of_overwriting_pressure(
             .unwrap();
         let mut config = gas_config();
         config.relaxation.iterations = 1;
-        config.gas.as_mut().unwrap().relaxation_weight = weight;
         let mut job = PressureJob::new(&world, layer, config).unwrap();
         finish(&mut job, &world, 1);
         world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
@@ -635,7 +643,13 @@ fn gas_target_is_relaxed_with_configured_lambda_instead_of_overwriting_pressure(
 #[test]
 fn air_stays_zero_and_cannot_bypass_gas_lambda() {
     for (weight, expected) in [(0, 0), (1, 65536), (3, 3 * 65536 / 2)] {
-        let mut world = fixture(8);
+        let mut world = fixture_with_properties(
+            8,
+            GasPressureProperties {
+                relaxation_weight: weight,
+                ..GasPressureProperties::default()
+            },
+        );
         let layer = layer(&world);
         let gas = cell(&world, "test:gas");
         world
@@ -648,7 +662,6 @@ fn air_stays_zero_and_cannot_bypass_gas_lambda() {
             .unwrap();
         let mut config = gas_config();
         config.relaxation.iterations = 1;
-        config.gas.as_mut().unwrap().relaxation_weight = weight;
         let mut job = PressureJob::new(&world, layer, config).unwrap();
         finish(&mut job, &world, 1);
         world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
@@ -656,4 +669,135 @@ fn air_stays_zero_and_cannot_bypass_gas_lambda() {
         assert_eq!(pressure(&world, p(11, 10)), 0);
         assert_eq!(pressure(&world, p(12, 10)), 0);
     }
+}
+
+#[test]
+fn loading_job_from_state_each_phase_makes_progress_with_budget_one() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let water = cell(&world, "test:water");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), water)?;
+            edit.set_cell(layer, p(10, 11), water)
+        })
+        .unwrap();
+    let job = PressureJob::new(&world, layer, config()).unwrap();
+    world
+        .edit(|edit| edit.set_state(key("test:job"), key("test:job-schema"), &job))
+        .unwrap();
+    for _ in 0..256 {
+        let mut resumed: PressureJob = world.state(key("test:job")).unwrap();
+        resumed.step(&world, 1).unwrap();
+        world
+            .edit(|edit| edit.set_state(key("test:job"), key("test:job-schema"), &resumed))
+            .unwrap();
+        if resumed.status() == PressureJobStatus::Ready {
+            world
+                .edit(|edit| edit.publish_pressure_job(&resumed))
+                .unwrap();
+            return;
+        }
+    }
+    panic!("毎phaseの状態復元で検査が最初に戻り、有限jobが完了しない");
+}
+
+#[test]
+fn connected_gases_resolve_lambda_from_each_material() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let gas = cell(&world, "test:gas");
+    let other = cell(&world, "test:other-gas");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), gas)?;
+            edit.set_cell(layer, p(11, 10), other)?;
+            for x in 10..12 {
+                edit.set_channel(key("test:temperature"), p(x, 10), 3i64 * 65536)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let mut config = gas_config();
+    config.relaxation.iterations = 1;
+    let mut job = PressureJob::new(&world, layer, config).unwrap();
+    finish(&mut job, &world, 1);
+    world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
+    // 共通target6に対し、素材ごとのlambda1・3を独立して解決します。
+    assert_eq!(pressure(&world, p(10, 10)), 3 * 65536);
+    assert_eq!(pressure(&world, p(11, 10)), 9 * 65536 / 2);
+}
+#[test]
+fn gas_properties_are_validated_fingerprinted_and_enforced() {
+    let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
+    assert!(
+        registry
+            .register(
+                MaterialBuilder::new("test:invalid", MaterialBase::Solid)
+                    .unwrap()
+                    .gas_pressure(GasPressureProperties::default())
+            )
+            .is_err()
+    );
+    assert!(
+        registry
+            .register(
+                MaterialBuilder::new("test:invalid", MaterialBase::Gas)
+                    .unwrap()
+                    .gas_pressure(GasPressureProperties {
+                        maximum_q16: -1,
+                        ..GasPressureProperties::default()
+                    })
+            )
+            .is_err()
+    );
+    let default = content_with_properties(8, GasPressureProperties::default());
+    let properties = GasPressureProperties {
+        coefficient_q16: 2 * 65536,
+        relaxation_weight: 3,
+        maximum_q16: 4 * 65536,
+    };
+    let different = content_with_properties(8, properties);
+    assert_ne!(default.fingerprint(), different.fingerprint());
+    for (coefficient, expected) in [(65536, 6 * 65536), (2 * 65536, 12 * 65536)] {
+        let mut sample = fixture_with_properties(
+            8,
+            GasPressureProperties {
+                coefficient_q16: coefficient,
+                ..GasPressureProperties::default()
+            },
+        );
+        let layer = layer(&sample);
+        let gas = cell(&sample, "test:gas");
+        sample
+            .edit(|edit| {
+                edit.set_cell(layer, p(10, 10), gas)?;
+                edit.set_channel(key("test:temperature"), p(10, 10), 3i64 * 65536)
+            })
+            .unwrap();
+        let mut job = PressureJob::new(&sample, layer, gas_config()).unwrap();
+        finish(&mut job, &sample, 1);
+        sample.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
+        assert_eq!(pressure(&sample, p(10, 10)), expected);
+    }
+    let mut world = fixture_with_properties(8, properties);
+    let layer = layer(&world);
+    let gas = cell(&world, "test:gas");
+    world
+        .edit(|edit| {
+            edit.set_cell(layer, p(10, 10), gas)?;
+            edit.set_channel(key("test:temperature"), p(10, 10), 3i64 * 65536)
+        })
+        .unwrap();
+    let before = world.checkpoint(4_000_000).unwrap();
+    let mut job = PressureJob::new(&world, layer, gas_config()).unwrap();
+    let mut failed = false;
+    for _ in 0..100 {
+        if job.step(&world, 1).is_err() {
+            failed = true;
+            break;
+        }
+    }
+    assert!(failed);
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
 }

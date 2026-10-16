@@ -2,6 +2,7 @@ name: E05 物質輸送と圧力
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

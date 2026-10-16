@@ -193,3 +193,13 @@ lambda0・1・3、隣接気体2cell、1反復の参照式を検査するテス�
 空cell2つと気体cell1つを連結し、lambda0・1・3で1反復の参照値を検査する回帰テストを追加した。同テストを修正前`99cb429`で実行し、lambda0の結果が期待0に対して131072となって失敗することを確認した。修正後は0・65536・98304で成功する。温度と容積の他の試験・作例も、target圧と公開される緩和後圧を区別して更新した。
 
 修正後は全295テスト成功（pressure_job 16、他の内訳は上と同じ）。fmt、全target check、警告拒否Clippy・Rustdoc成功。作例はtarget Q16=131072、lambda1・空境界0からの緩和後Q16=65536、計算48件と保存再開一致を確認した。保存recordの構造は`CHPRJOB2`のままで、古い誤ったscratchは復元後の決定的照合で拒否する。修正をpushして再レビューを確認するまで、本単位もレビュー完了とは判定しない。
+
+### PR #7の再レビュー：素材別のlambdaと保存進捗
+
+`1152352`のCI20件はすべて成功したが、[lambdaをjob共通値にしていたP1](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4291099530)を指摘された。`MaterialBuilder::gas_pressure`と`GasPressureProperties`で係数・lambda・上限を気体素材ごとに登録し、`MaterialDef`から各cellの入力へ解決する形へ修正した。同じ連結領域の気体2種類にlambda1・3を与え、1反復でそれぞれ3・4.5となる参照値を検査した。係数によるtargetの変化、上限超過、非気体・負上限の登録拒否、Content fingerprintの変化も検査した。明示物性はContentの物理manifestへ含め、異なる物性を互換と扱わない。
+
+併せて、毎phaseでStateStoreからjobを取得して一件進め再保存する試験を追加した。修正前の復元時全再計算方式では256phase後も完了せず失敗した。過剰な全再計算・照合用の二重scratchを除去し、保存した数値配列・queue・cursorをそのまま継続する。decodeでは数値・段階・隣接索引・queueと不可能な診断件数を検査し、公開前にはWorldの全入力を再採取して照合する。保存bufferのchecksumは既存保存層が担い、反復履歴を再実行した証明とはしない。これは上記初版の再計算方式を置き換える。`CHPRJOB3`として以前の未マージrecordを拒否し、自動移行は行わない。
+
+対象19テストと全298テストが成功。内訳はlib/host 107、assets 24、foundation 19、material_motion 12、material_receipts 15、material_transport 24、pressure_job 19、runtime 28、world 50。失敗・無視なし。fmt・全target check・警告拒否Clippy・Rustdoc、保存再開の作例も成功した。
+
+リソース使用の確認では、同じcommitに4 workflowがpushとpull_requestで二重起動し、計20ジョブとなっていた。開発ブランチはPR、pushはmain、手動実行は維持する設定へ統一した。検査項目と3 OSを削らず、以後の開発PRは計10ジョブにする。変更ごとの検査をまとめてからpushし、最新commitの実レビュー結果とCIで判定する。

@@ -17,21 +17,33 @@ if job.status() == PressureJobStatus::Ready {
 }
 ```
 
-schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存形式は`CHPRJOB2`。PR初版の`CHPRJOB1`にはlambdaがなく、本版はそのrecordを拒否する。既存保存を読み換える自動migrationは用意せず、作者のschema移行が必要である。独自solverの採用を制限せず、作者は同じchannel・StateStore・取引APIで別の数値方式や分割規則を使える。
+schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存形式は`CHPRJOB3`。素材別の係数・lambda・上限を入力へ保持する。本版はPR初期の`CHPRJOB1`・`CHPRJOB2`を拒否し、自動migrationは行わない。独自solverの採用を制限せず、作者は同じchannel・StateStore・取引APIで別の数値方式や分割規則を使える。
 
 ## 従来profileとの一致
 
-`PressureJobConfig.gas = None`、`pump = None`では、既存の`relax_pressure`と同じ液体・気体の連結、自由表面0、閉領域の前回平均anchor、massと重力項、Jacobi反復を使う。浮動小数点は使わず、同じ反復数なら分割予算にかかわらず同じ出力になる。標準反復数4は製品の固定制限ではなく、呼出側が`PressureRelaxation`に指定する。
+`PressureJobConfig.gas = None`、`pump = None`では、既存の`relax_pressure`と同じ液体・気体の連結、自由表面0、閉領域の前回平均anchor、massと重力項、Jacobi反復を使う。浮動小数点は使わず、同じ反復数なら分割予算にかかわらず同じ出力になる。標準反復数4は製品の固定制限ではなく、呼出側が`PressureRelaxation`に指定する。Noneでは広域の気体profileを無効にし、素材の気体source係数・lambda・気体profileの上限を適用しない。
 
 ## 気体profile
 
 `GasPressureSource`を渡すと、液体と気体の連結を分離する。気体は同じ活動域の気体・空cellを四近傍で連結し、全素材の気体massと絶対温度Q16を積算する。空cell一つを含む各sampleが容積1である。
 
-`target_q16 = floor(Σ(mass_per_cell × temperature_q16) × coefficient_q16 / (volume × 65536))`
+`target_q16 = floor(Σ(mass_per_cell(i) × temperature_q16(i) × coefficient_q16(i)) / (volume × 65536))`
 
-例えばmass2・温度3・容積3ならtarget圧2、容積2ならtarget圧3となる。実際に公開する圧力は前回圧・近傍圧・重力・lambdaからの緩和結果で、targetそのものとは限らない。温度はi64の1対1channelから読み、位置固定または同layerの物質追従を選べる。温度と出力圧力は別channelを要求する。係数は作者が指定する非負Q16で、0も有効。負温度・負の入力圧・負のポンプ値、計算のu128積上限・出力i64上限を超える値はエラーにする。
+温度は`GasPressureSource.temperature`のi64・1対1channelから読み、位置固定または同layerの物質追従を選べる。温度と出力圧力は別channelを要求する。圧力の係数・緩和の重み・上限は`MaterialBuilder::gas_pressure(GasPressureProperties)`で素材ごとに登録する。
 
-得られたtargetへ、各気体cellを近傍圧と重みlambda（`relaxation_weight`）で緩和する。`Pnext = max(0, trunc((Σ(Pneighbor + rho_avg*g*dy) + lambda*target)/(neighbor_count + lambda)))`。lambda=0も有効で、近傍がなくlambda=0なら前回圧を維持する。活動中の空cellは近傍の相対圧0として扱い、気体cellの前回圧もtargetへ直接上書きしない。targetはlambda項だけから加え、空cell境界から迂回して注入しない。空間のtargetを計算する係数と、targetへ近付く緩和の重みは別設定である。公開するのは占有する流体cellのみで、空cellには気体圧を保存しない。block、固体、粉体、液体、World境界、活動外、未読込は気体空間のno-flow境界。有限Worldの部分chunkの外を容積へ含めない。空だけの空間を流体領域の診断件数へ含めず、温度0の気体領域は数える。
+| 物性 | 標準値と意味 |
+| --- | --- |
+| `coefficient_q16` | 65536。非負Q16で、その素材のmass×温度の積へ掛ける。0も有効 |
+| `relaxation_weight` | 1。各cellのtarget緩和の重みlambda。0では直接のtarget項を加えない |
+| `maximum_q16` | i64::MAX。非負Q16圧の上限。超過は丸めずエラー |
+
+気体以外への明示設定と負の上限は素材登録で拒否する。`MaterialDef::gas_pressure`から解決した物性をjobの各cellへ採取するので、同じ連結領域でも異なる素材に異なるlambdaが適用される。明示物性はContentの物理manifestへ含め、変更を保存互換と誤認しない。物性の明示設定がない既存Contentのmanifestは維持する。負温度・負の入力圧・負のポンプ値、計算のu128積算・i64出力の超過、素材の圧力上限超過はエラーにする。
+
+標準係数でmass2・温度3・容積3ならtarget圧2、容積2ならtarget圧3となる。実際に公開する圧力は前回圧・近傍圧・重力・素材別lambdaからの緩和結果である。
+
+`Pnext(i) = max(0, trunc((Σ(Pneighbor + rho_avg*g*dy) + lambda(i)*target)/(neighbor_count + lambda(i))))`
+
+近傍がなくlambda=0なら前回圧を維持する。活動中の空cellは近傍の相対圧0として扱い、気体cellの前回圧もtargetへ直接上書きしない。targetはlambda項だけから加え、空cell境界から迂回して注入しない。公開するのは占有する流体cellのみで、空cellには気体圧を保存しない。block、固体、粉体、液体、World境界、活動外、未読込は気体空間のno-flow境界。有限Worldの部分chunkの外を容積へ含めない。空だけの空間を流体領域の診断件数へ含めず、温度0の気体領域は数える。
 
 これはcell占有のゲーム用pressure proxyであり、実在流体の精度、異なる容積のtile流体、圧縮性の連続体計算を保証する方式ではない。圧力だけを理由に気体を発行・消去しない。物質移動は既存の輸送・押出しphaseに任せる。温度は作者が与える状態であり、enthalpyからの温度解決はE06で接続する。
 
@@ -43,7 +55,9 @@ schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存�
 
 World ID・Content fingerprint・material epoch・活動chunk集合とそのrevisionを保持する。入力の占有、channel、活動集合が変われば古いjobを失効させる。無関係な位置の編集でも同じ活動chunkなら再計算が必要な保守的方針である。完成後の公開によるrevision変更で同じ非空jobの二重公開を拒否する。出力がないjobの公開は状態を変えない。
 
-保存には入力と計算中の配列・queue・cursor・反復数を含める。復元直後は完成済みrecordでも`Computing`に戻し、公開を禁止する。新しく採取したWorld入力との一致を確認し、保存時点までの決定的計算をstep予算内で再実行してscratch全体を照合する。照合中は`completed_work`と`completed_iterations`を保存時点に保ち、終わってから残る計算を進める。切断・不正件数・負値・不正index・queue重複・不正段階はdecodeで拒否し、形式上は読めるscratchの改変・入力の欠落も再計算と公開前の照合で拒否する。照合の途中で再保存すると、その一時的な照合計算は保存せず、次の復元で照合をやり直す。
+保存には入力と計算中の配列・queue・cursor・反復数を含め、復元後もその続きから進める。完成済みrecordはReadyを維持するが、公開前にWorldの実入力全体を再採取して照合する。切断・不正件数・負値・数値上限・不正index・隣接関係・queueの重複と訪問状態・不正段階・不可能な診断件数はdecodeで拒否する。
+
+old/nextの配列は保存する正規数値状態であり、過去の反復履歴を全再実行して検査しない。保存bufferのchecksumは既存の保存層が担う。jobを毎phaseでStateStoreから取得し、一件進めて再保存しても有限の仕事量で完了する。復元のたびに検査cursorを最初へ戻す方式は採用しない。
 
 通常のstepはfrontier全体を複製しない。計算中の数値エラーは現在のcell処理直前で止まり、先に終えた仕事はjobに残る。Worldは変更されない。値域を超えた入力を直して同じjobを使うことはできず、変更後のWorldから新しいjobを作る。
 
@@ -52,11 +66,11 @@ World ID・Content fingerprint・material epoch・活動chunk集合とそのrevi
 - newの入力採取は活動chunkの全4096cellを走査し、sampleを安定順に並べる。気体profileでは空cellも保持する。`cell_limit`にそれらを含め、容量不足なら開始しない。
 - stepの予算はcell処理の件数で、隣接検索にはsample数に対する二分探索を使う。毎stepの活動集合・revision照合は別途chunk数に依存する。wall-clockの一定時間保証ではない。
 - scratchはsample配列と最大sample数の探索queue。保存・復元は配列全体に比例する。StateStoreへ毎step保存する費用はsolverの件数予算に含めない。
-- 復元時の再検査は独立scratchを追加し、保存時点までの計算量を再度必要とする。計算再実行はstep予算で進むが、再検査開始時の入力採取と最後の全配列比較は一括費用である。
+- decodeの構造検査は配列全体と隣接の二分探索に依存する。StateStoreを毎phaseで読み書きする費用は残るが、過去の反復の再計算や照合用の二重scratchを必要としない。
 - 公開は入力を再採取するscratch、全入力比較、出力列、channel容量予約と一括書込の費用を持つ。全反復のやり直しは公開時に行わない。
 
 このAPIを単独で全活動域を自動分割するscheduler、dirty/sleep、全solverのprovider登録、力の積分、物質粒子・混合・全表現収支の完成とは扱わない。巨大域で入力採取や最終公開まで厳密な時間分割が必要な作者は別profileを使える。これらのE05統合とQ04は続いて検証する。
 
 ## 検証
 
-`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3と空cell隣接の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、切断とscratch改変を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3でtarget Q16=131072、lambda1と空境界0からの緩和結果Q16=65536を検査し、途中保存と連続実行のcheckpoint一致をassertする。
+`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3と空cell隣接の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、素材別の係数・lambda・上限とContent fingerprint、毎phaseのStateStore復元、切断と不可能な診断件数を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3でtarget Q16=131072、lambda1と空境界0からの緩和結果Q16=65536を検査し、途中保存と連続実行のcheckpoint一致をassertする。
