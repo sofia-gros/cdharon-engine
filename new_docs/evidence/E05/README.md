@@ -319,6 +319,14 @@ Windows/MSVC・Rust 1.98.1、`-j 2`、既存cacheの`--target-dir target/e01-val
 
 最後のコード変更後に全検査をまとめて実行した。未実装の全体収支・provider・Q04を、この342件で検証済みとは扱わない。GitHubの3 OS CI・実レビューはpushとPR提出後に確認する。
 
+### PR #10のP1対応：退避粒子への空気remap
+
+対象`e3a76f28d8e3ad4c496db62c9812a84a1d6e6571`はCI10件すべて成功したが、[退避中だけの粒子へ空気向けmappingを登録できるP1](https://github.com/sofia-gros/charon-engine/pull/10#discussion_r4296566162)を指摘された。REST APIのoriginal_commit_idも同commitと照合した。
+
+退避粒子だけを残してremapのエラーを無視する回帰試験を追加し、修正前に規則が受理されて失敗することを確認した。engine:particlesの空気向けmappingは現在の粒子数・所属・活動状態と関係なく規則登録時に拒否する。保存復元にも同じ規則検査を適用する。拒否後にWorld・epochが不変で、保存済み区域を正常復帰してpayload・速度を保持できること、粒子が存在しない場合とresidentの場合も拒否することを検査した。正常な素材変更・退避復帰の既存試験は維持する。
+
+合わせて、初期pool上限を08の既定profileで指定された262,144へ合わせた。保存済みWorldの容量を自動拡張する変更ではない。Windows/MSVC・Rust 1.98.1で対象22件、全344テストが成功し、失敗・無視なし。内訳は上記342件のparticles20が22となる。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功した。最新commitのpush後に再レビューとCIを確認するまで、本単位の対応完了とは判定しない。
+
 ### E05出口の未達
 
 | 必須項目 | 現在の判定 |

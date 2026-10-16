@@ -429,7 +429,7 @@ impl Default for WorldLimits {
             job_bytes: 64 * 1024 * 1024,
             remaps: 4096,
             edit_cells: 65536,
-            particles: 32768,
+            particles: 262144,
             particle_bytes: 16 * 1024 * 1024,
         }
     }

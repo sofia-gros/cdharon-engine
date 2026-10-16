@@ -981,3 +981,83 @@ fn old_region_archive_restores_without_particles() {
         Ok(CellQuery::Loaded(_))
     ));
 }
+
+#[test]
+fn particle_air_remap_rejected_before_archived_region_can_be_stranded() {
+    let (mut world, layer) = fixture(WorldLimits::default());
+    place(&mut world, layer, p(2, 2));
+    let handle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(2, 2), [1, 2]))
+        .unwrap();
+    let mut archives = Archives::default();
+    let stored = world
+        .prepare_eviction(
+            ChunkRegion::single(ChunkCoord::new(0, 0).unwrap()).unwrap(),
+            8_000_000,
+        )
+        .unwrap()
+        .store(&mut archives)
+        .unwrap();
+    world.edit(|edit| edit.finish_eviction(stored)).unwrap();
+    let before = save(&world);
+    let result = world.edit(|edit| {
+        let _ = edit.remap_materials(MaterialRemap {
+            owner: key("engine:particles"),
+            layers: vec![],
+            mappings: vec![(
+                MaterialHandle(key("test:sand")),
+                MaterialHandle(key("engine:air")),
+            )],
+        });
+        Ok(())
+    });
+    assert!(
+        result.is_err(),
+        "退避粒子を空気へ変えるmappingは登録時に拒否する"
+    );
+    assert_eq!(save(&world), before);
+    assert_eq!(world.material_remaps().epoch(), 0);
+    let loaded = world
+        .region_load_task(ChunkCoord::new(0, 0).unwrap(), 8_000_000)
+        .unwrap()
+        .load(&mut archives)
+        .unwrap();
+    world.edit(|edit| edit.restore_region(loaded)).unwrap();
+    assert_eq!(
+        world.material_particle(handle).unwrap().velocity_q16(),
+        [1, 2]
+    );
+    assert_eq!(
+        world
+            .particle_channel_value::<u64>(handle, key("test:energy"))
+            .unwrap(),
+        345
+    );
+}
+
+#[test]
+fn particle_air_mapping_is_rejected_without_matching_live_particles() {
+    for resident in [false, true] {
+        let (mut world, layer) = fixture(WorldLimits::default());
+        if resident {
+            place(&mut world, layer, p(2, 2));
+            world
+                .edit(|edit| edit.emit_material_particle(layer, p(2, 2), [0, 0]))
+                .unwrap();
+        }
+        let before = save(&world);
+        assert!(
+            world
+                .edit(|edit| edit.remap_materials(MaterialRemap {
+                    owner: key("engine:particles"),
+                    layers: vec![key("test:layer")],
+                    mappings: vec![(
+                        MaterialHandle(key("test:sand")),
+                        MaterialHandle(key("engine:air"))
+                    )]
+                }))
+                .is_err()
+        );
+        assert_eq!(save(&world), before);
+    }
+}

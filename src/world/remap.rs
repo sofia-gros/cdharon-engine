@@ -158,6 +158,13 @@ impl World {
             for (source, target) in &rule.mappings {
                 let source = self.content.material_id(*source)?;
                 let target = self.content.material_id(*target)?;
+                if rule.owner == StableKey::parse("engine:particles")? && target == MaterialId::AIR
+                {
+                    // 現在のresidentだけで判定すると、退避中または未生成の粒子へ
+                    // 不正規則が後から適用され、区域を復帰不能にします。mappingの
+                    // 登録と保存復元の両方で拒否し、現在の粒子数に依存させません。
+                    return Err(invalid("粒子を空へremapするには明示的な消費ruleが必要"));
+                }
                 if rule.owner == StableKey::parse("engine:blocks")?
                     && let (Some(old), Some(new)) = (
                         self.content.material(source)?,

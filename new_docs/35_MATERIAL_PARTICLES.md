@@ -24,7 +24,7 @@
 
 `land_material_particle(handle)`は現在cellが空で、全物質channelも既定値である場合にだけ所有権を返す。空cellに残る作者payloadを黙って捨てない。全channelの最終chunk数とWorld byte数、通常編集数を事前検査し、cell本体と全payloadの書戻し、粒子slotの解放を一つのWorld取引で行う。
 
-`WorldLimits.particles`がslot上限、`particle_bytes`がresidentのchannelキー・長さheader・値のcodec byte合計上限である。退避中もIDのslotは確保し、payload配列はarchiveへ移して解放する。slotのmetadata、Vecの管理領域、World候補の複製とcodec scratchはこのpayload byte数とは別の費用である。channelの容量と粒子容量は独立し、どちらも自動拡大しない。
+`WorldLimits.particles`がslot上限で、[08の既定profile](08_DATA_MODEL_AND_FORMATS.md#容量の基準)に従い262,144とする。`particle_bytes`がresidentのchannelキー・長さheader・値のcodec byte合計上限である。退避中もIDのslotは確保し、payload配列はarchiveへ移して解放する。slotのmetadata、Vecの管理領域、World候補の複製とcodec scratchはこのpayload byte数とは別の費用である。channelの容量と粒子容量は独立し、どちらも自動拡大しない。
 
 pool・payload・着地先channel・編集予算・DDA予算の不足では外側のWorld取引を失敗させ、入力と先行変更を保持する。callbackがエラーを無視しても部分確定しない。phase全体のrollbackは継続Jobではない。広域移動を保存可能な件数分割Jobにすることは別のE05残作業である。
 
@@ -34,7 +34,7 @@ World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena�
 
 区域形式は`CHREGN02`。所属位置のregionと一緒に全粒子payloadを保存する。保存の再読込・hash照合後にだけresident payloadを解放し、World側にはID・位置・速度・素材epoch・archive hashを残す。保存中に速度だけを変更した場合も古いreceiptを拒否する。復帰ではID・世代・全metadata・所属・粒子件数を照合し、地形・channelと同時に戻す。`CHREGN01`は粒子ゼロとして読み込む。
 
-素材remapの所有先は`engine:particles`。residentへは同じ取引で適用し、archiveは復帰時に未適用epochを適用する。空素材へのremapはpayloadの消費ruleなしに消失させないため拒否する。明示的な発行・消費・表現変換の全体監査は次のE05統合で検証する。
+素材remapの所有先は`engine:particles`。residentへは同じ取引で適用し、archiveは復帰時に未適用epochを適用する。空素材向けのmappingは、現在の粒子数・resident/退避状態にかかわらず規則登録時に拒否する。保存した規則の復元でも同じ検査を行い、退避中の粒子へ不正規則が潜伏して区域が復帰不能になることを防ぐ。明示的な発行・消費・表現変換の全体監査は次のE05統合で検証する。
 
 ## 費用と検証
 
