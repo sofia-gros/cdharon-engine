@@ -251,3 +251,13 @@ Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2。
 ### 残作業
 
 この単位は現在の全表現を監視する総量台帳ではない。正規物質粒子とpool、粒子・剛体local cell・reservoir・退避領域を含む全体収支、dirty/sleepの参照比較、物性とproviderの統合、広域移動とQ04を続ける。E05の出口を満たすまではマージせず、満たした後はマージしてPCへ引き継ぎ、E06には着手しない。
+
+### PR #8のP1対応：古い共有storeからの巻戻し
+
+[指摘](https://github.com/sofia-gros/charon-engine/pull/8#discussion_r4293458391)は、`MixtureStore::new`の既存record検査だけでは、あらかじめ作った空storeや過去のsnapshotを汎用`set_state`で書き戻せる点だった。登録indexを再利用して既存参照の意味を変えるためP1に該当する。古い定義前・receipt前のsnapshotで上書きする回帰試験が修正前に失敗することを確認した。
+
+Worldの固定キーへのtyped・encoded書込みで型とWorld/Contentを検査し、現在の全定義とwitnessが候補の同一prefixとして残ることを取引内で要求する。別型への置換も拒否し、エラーを無視しても外側をrollbackする。古い候補二つを先に準備する場合も拒否し、容量変更と正規の追記は許す。CHMIX001の形式は変えない。全履歴の再decode・prefix比較費用を34へ記録した。
+
+Linux / Rust 1.98.1、CARGO_BUILD_JOBS=2で全318テスト成功（混合物17、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdocと混合分離の保存再開作例が成功した。
+
+この再開時にはGitHub APIが401 Bad credentialsとなり、Gitの既存設定での`ls-remote`も認証入力を要求して失敗した。環境statusに利用可能なGitHub認証bindingは示されなかった。ローカル修正後のpush・最新CI・再レビュー・指摘返信は未実施であり、認証復旧後にこのcommitをpushして同じPRで継続する。レビュー完了と見なさず、次の実装単位とマージには進めない。E05全体は未完了、E06は未着手である。

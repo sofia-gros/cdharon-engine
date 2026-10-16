@@ -1019,3 +1019,78 @@ fn invalid_outputs_duplicates_unavailable_cells_and_blocks_are_rejected() {
         assert_eq!(before, world.checkpoint(4_000_000).unwrap());
     }
 }
+
+#[test]
+fn stale_store_cannot_replace_definitions_or_receipt_history() {
+    let mut world = world();
+    let before_definitions: MixtureStore = world.state(MixtureStore::key()).unwrap();
+    let reference = reference(&mut world);
+    let before_receipts: MixtureStore = world.state(MixtureStore::key()).unwrap();
+    seed(&mut world);
+    mix(&mut world, reference);
+    for stale in [before_definitions, before_receipts] {
+        let before = world.checkpoint(4_000_000).unwrap();
+        assert!(
+            world
+                .edit(|edit| edit.set_state(MixtureStore::key(), config().schema, &stale))
+                .is_err()
+        );
+        assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    }
+    let before = world.checkpoint(4_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| {
+                let _ = edit.set_state(MixtureStore::key(), key("test:u64"), &0u64);
+                Ok(())
+            })
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    let mut latest: MixtureStore = world.state(MixtureStore::key()).unwrap();
+    latest
+        .set_limits(MixtureLimits {
+            entries: 16,
+            components: 8,
+            receipts: 32,
+        })
+        .unwrap();
+    world
+        .edit(|edit| edit.set_state(MixtureStore::key(), config().schema, &latest))
+        .unwrap();
+    world
+        .state::<MixtureStore>(MixtureStore::key())
+        .unwrap()
+        .validate_world(&world)
+        .unwrap();
+}
+#[test]
+fn second_prepared_store_cannot_reset_an_installed_store() {
+    let mut world = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        0,
+        WorldBounds::expandable(),
+        content(8, 1_000_000),
+        WorldLimits::default(),
+    )
+    .unwrap();
+    let first = MixtureStore::new(&world, limits()).unwrap();
+    let second = MixtureStore::new(&world, limits()).unwrap();
+    world
+        .edit(|edit| edit.set_state(MixtureStore::key(), config().schema, &first))
+        .unwrap();
+    let reference = reference(&mut world);
+    let before = world.checkpoint(4_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit.set_state(MixtureStore::key(), config().schema, &second))
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+    let other = world
+        .edit(|edit| edit.register_mixture(config().schema, &state(2, 1)))
+        .unwrap();
+    assert_ne!(reference, other);
+    let store: MixtureStore = world.state(MixtureStore::key()).unwrap();
+    assert_eq!(store.resolve(reference).unwrap().unwrap(), &state(1, 1));
+}

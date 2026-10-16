@@ -7,7 +7,7 @@
 use super::{BlockInstance, BlockRef, Content, World, WorldEdit, WorldLimits, invalid};
 use crate::foundation::{
     EngineError, EngineResult, ErrorCode, StableKey,
-    codec::StateCodec,
+    codec::{Decoder, StateCodec},
     state::{StateStore, StoreLimits},
     transaction::CandidateState,
 };
@@ -168,6 +168,16 @@ impl WorldEdit<'_> {
         payload: Vec<u8>,
     ) -> EngineResult<()> {
         self.run(|editor| {
+            if key == super::MixtureStore::key() {
+                let definition = editor.world.content.schemas.get(schema)?;
+                if !definition.is::<super::MixtureStore>() {
+                    return Err(EngineError::new(ErrorCode::SchemaMismatch, "混合storeの型"));
+                }
+                let mut input = Decoder::new(&payload, definition.max_bytes())?;
+                let value = super::MixtureStore::decode(&mut input)?;
+                input.finish()?;
+                value.validate_replacement(editor.world)?;
+            }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put_encoded(key, schema, payload)?;
             transaction.commit()?;
@@ -183,6 +193,13 @@ impl WorldEdit<'_> {
         value: &T,
     ) -> EngineResult<()> {
         self.run(|editor| {
+            // 標準storeの参照indexは公開後に再利用できないため、汎用APIでも履歴を保護します。
+            if key == super::MixtureStore::key() {
+                let mixture = (value as &dyn std::any::Any)
+                    .downcast_ref::<super::MixtureStore>()
+                    .ok_or_else(|| EngineError::new(ErrorCode::SchemaMismatch, "混合storeの型"))?;
+                mixture.validate_replacement(editor.world)?;
+            }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put(key, schema, value)?;
             transaction.commit()?;

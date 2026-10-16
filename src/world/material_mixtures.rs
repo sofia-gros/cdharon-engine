@@ -328,6 +328,7 @@ pub struct MixtureReferenceChange {
     pub output: MixtureRef,
 }
 /// cell receiptの変更列と合わせて成分収支を再計算できるwitnessです。
+#[derive(PartialEq, Eq)]
 pub struct MixtureReceiptWitness {
     journal: StableKey,
     sequence: u64,
@@ -439,6 +440,24 @@ impl MixtureStore {
             .get(reference.index as usize - 1)
             .map(Some)
             .ok_or_else(|| invalid("混合参照のindex"))
+    }
+    /// 固定キーへの書戻しでも既存indexと履歴を保持し、古いsnapshotによる巻戻しを拒否します。
+    pub(super) fn validate_replacement(&self, world: &World) -> EngineResult<()> {
+        self.scope(world)?;
+        if world
+            .state
+            .records()
+            .any(|record| record.key == Self::key())
+        {
+            let current = world.state::<Self>(Self::key())?;
+            current.scope(world)?;
+            if !self.entries.starts_with(&current.entries)
+                || !self.receipts.starts_with(&current.receipts)
+            {
+                return Err(conflict("混合storeの既存定義または履歴の巻戻し"));
+            }
+        }
+        Ok(())
     }
     fn scope(&self, world: &World) -> EngineResult<()> {
         if self.world != world.id() {
