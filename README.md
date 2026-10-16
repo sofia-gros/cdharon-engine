@@ -35,7 +35,7 @@ E05の輸送・圧力部分は[PR #4](https://github.com/sofia-gros/charon-engin
 
 cellの発行・消費・変換と[理由付きreceipt](new_docs/32_MATERIAL_RECEIPTS.md)を同時に保存する経路も追加し、全279テストと品質チェック、保存復元の作例をLinuxで検証しました。この経路は全編集の監視や全表現の総量台帳ではなく、粒子・剛体・退避領域などとの収支統合は残っています。
 
-[気体sourceと広域圧力job](new_docs/33_WIDE_PRESSURE.md)も追加しました。温度・連結空間・素材別の係数とlambda・圧力上限・ポンプ境界を明示し、予算付きの計算後に全圧力を一括公開します。毎phaseの状態復元でも進捗を維持し、Linuxで全300テストと品質検査を通過しました。混合・粒子・全体収支・dirty/sleep・物性とprovider統合は残り、E05全体・Q04は未完了です。
+[気体sourceと広域圧力job](new_docs/33_WIDE_PRESSURE.md)も追加しました。温度・連結空間・素材別の係数とlambda・圧力上限・ポンプ境界を明示し、予算付きの計算後に全圧力を一括公開します。毎phaseの状態復元でも進捗を維持し、Linuxで全301テストと品質検査を通過しました。混合・粒子・全体収支・dirty/sleep・物性とprovider統合は残り、E05全体・Q04は未完了です。
 
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 

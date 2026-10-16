@@ -215,3 +215,9 @@ lambda0・1・3、隣接気体2cell、1反復の参照式を検査するテス�
 decodeで連結成分を一度構築し、stage・cursor・rootに対応する訪問集合、BFS順のqueueと発見prefix、反映済みsourceとanchor、部分集計・target・診断件数を照合する。過去のJacobi反復は再実行しない。未処理の別成分のseenだけをtrueにしたrecordと、訪問bitを保ってqueue順だけを入れ替えたrecordを拒否する試験を追加した。前者は修正前に不整合を受理して失敗することを確認した。正しい保存は液体・気体・空間の複数連結成分について、全計算段階で復元可能なことを検査する。
 
 修正後は全300テスト成功（pressure_job 21、他の内訳は前節と同じ）。fmt・全target check・警告拒否Clippy・Rustdoc・保存再開作例が成功した。保存形式はCHPRJOB3を維持し、不整合recordへの検査を強化する。復元の一時scratchと連結探索の費用は33へ追記した。最新commitへの再レビューを待ち、指摘対応を終えてから次の実装単位へ進む。
+
+### PR #7の追加P2：Jacobiとbuffer切替の数値prefix
+
+`95698a7`の再レビューで[Jacobi・buffer切替のcursor改変](https://github.com/sofia-gros/charon-engine/pull/7#discussion_r4293119194)を指摘された。現反復の計算を`next_pressure`へ共有し、stage4の処理済みprefixのnext、未処理suffixの保持値と初回oldを照合する。stage6はコピー済みprefixのold==next、初回の未コピーsuffix、コピー開始前のnextを検査し、完成時もold==nextを要求する。過去の全反復を再実行しない。
+
+cursorを0から全node数へ書き換える回帰試験を追加した。修正前はstage4の不整合を受理して失敗し、修正後はstage4・6の両方を拒否する。複数成分・全段階の正しい保存と毎phaseの復元も成功した。対象22テスト、全301テスト、fmt・全target check・警告拒否Clippy・Rustdocと保存作例が成功。保存形式CHPRJOB3は維持する。最新commitのCIと実レビュー結果を確認してから次の実装へ進む。

@@ -811,7 +811,7 @@ fn gas_properties_are_validated_fingerprinted_and_enforced() {
 }
 
 // CHPRJOB3のnode境界を型codecで読み、訪問bitだけを書き換える回帰試験用の位置を得ます。
-fn saved_progress_offsets(data: &[u8]) -> (Vec<usize>, Vec<usize>) {
+fn saved_progress_offsets(data: &[u8]) -> (Vec<usize>, Vec<usize>, usize, usize) {
     let mut input = Decoder::new(data, 2_000_000).unwrap();
     assert_eq!(input.raw(8).unwrap(), b"CHPRJOB3");
     WorldId::decode(&mut input).unwrap();
@@ -853,7 +853,9 @@ fn saved_progress_offsets(data: &[u8]) -> (Vec<usize>, Vec<usize>) {
         input.i64().unwrap();
         input.i64().unwrap();
     }
+    let stage = data.len() - input.remaining();
     input.u8().unwrap();
+    let cursor = data.len() - input.remaining();
     input.u32().unwrap();
     input.u32().unwrap();
     let mut queue = Vec::new();
@@ -861,7 +863,7 @@ fn saved_progress_offsets(data: &[u8]) -> (Vec<usize>, Vec<usize>) {
         queue.push(data.len() - input.remaining());
         input.u32().unwrap();
     }
-    (offsets, queue)
+    (offsets, queue, stage, cursor)
 }
 #[test]
 fn saved_seen_flags_cannot_skip_unprocessed_components() {
@@ -881,7 +883,7 @@ fn saved_seen_flags_cannot_skip_unprocessed_components() {
         let mut job = PressureJob::new(&world, layer, gas_config()).unwrap();
         job.step(&world, budget).unwrap();
         let mut data = bytes(&job);
-        let (offsets, _) = saved_progress_offsets(&data);
+        let (offsets, _, _, _) = saved_progress_offsets(&data);
         assert_eq!(data[offsets[1]], 0);
         data[offsets[1]] = 1;
         assert!(
@@ -907,7 +909,7 @@ fn saved_queue_must_follow_the_component_root_and_bfs_order() {
     let mut job = PressureJob::new(&world, layer, gas_config()).unwrap();
     job.step(&world, 6).unwrap();
     let mut data = bytes(&job);
-    let (_, queue) = saved_progress_offsets(&data);
+    let (_, queue, _, _) = saved_progress_offsets(&data);
     assert_eq!(queue.len(), 2);
     // 両nodeの訪問bitと件数を変えず、queueだけをrootと矛盾する順へ入れ替えます。
     let first = data[queue[0]..queue[0] + 4].to_vec();
@@ -915,4 +917,40 @@ fn saved_queue_must_follow_the_component_root_and_bfs_order() {
     data[queue[0]..queue[0] + 4].copy_from_slice(&second);
     data[queue[1]..queue[1] + 4].copy_from_slice(&first);
     assert!(decoded(&data).is_err());
+}
+
+#[test]
+fn saved_jacobi_and_copy_cursors_cannot_skip_numeric_work() {
+    let mut world = fixture(8);
+    let layer = layer(&world);
+    let gas = cell(&world, "test:gas");
+    world
+        .edit(|edit| {
+            for point in [p(10, 10), p(20, 20)] {
+                edit.set_cell(layer, point, gas)?;
+                edit.set_channel(key("test:temperature"), point, 3i64 * 65536)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    for wanted_stage in [4, 6] {
+        let mut job = PressureJob::new(&world, layer, gas_config()).unwrap();
+        let mut reached = false;
+        for _ in 0..256 {
+            let mut data = bytes(&job);
+            let (nodes, _, stage, cursor) = saved_progress_offsets(&data);
+            let saved_cursor = u32::from_le_bytes(data[cursor..cursor + 4].try_into().unwrap());
+            if data[stage] == wanted_stage && saved_cursor == 0 {
+                data[cursor..cursor + 4].copy_from_slice(&(nodes.len() as u32).to_le_bytes());
+                assert!(
+                    decoded(&data).is_err(),
+                    "数値処理を飛ばすcursorを受理した: stage={wanted_stage}"
+                );
+                reached = true;
+                break;
+            }
+            job.step(&world, 1).unwrap();
+        }
+        assert!(reached);
+    }
 }

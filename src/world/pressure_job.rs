@@ -524,6 +524,38 @@ impl PressureJob {
         {
             return Err(invalid("広域圧力の未探索状態"));
         }
+        // 現反復のprefixだけを検査します。stage 6ではコピーした旧値は失われるため、
+        // コピー済みprefixのold==nextと、初回の未コピーsuffixの初期値を照合します。
+        for (index, node) in self.nodes.iter().enumerate() {
+            match self.stage {
+                4 => {
+                    let expected = if index < self.cursor {
+                        self.next_pressure(index)?
+                    } else if self.iteration == 0 {
+                        0
+                    } else {
+                        node.old
+                    };
+                    if node.next != expected
+                        || self.iteration == 0 && node.old != node.input.pressure
+                    {
+                        return Err(invalid("保存したJacobiの数値prefix"));
+                    }
+                }
+                6 => {
+                    if index < self.cursor && node.old != node.next
+                        || self.iteration == 0
+                            && index >= self.cursor
+                            && node.old != node.input.pressure
+                        || self.cursor == 0 && node.next != self.next_pressure(index)?
+                    {
+                        return Err(invalid("保存した圧力buffer切替のprefix"));
+                    }
+                }
+                5 if node.old != node.next => return Err(invalid("完成した圧力bufferの不一致")),
+                _ => (),
+            }
+        }
         Ok(())
     }
     fn summary(&self, queue: &[u32]) -> EngineResult<PressureSummary> {
@@ -564,6 +596,40 @@ impl PressureJob {
             return Err(conflict("広域圧力の入力失効"));
         }
         Ok(())
+    }
+    /// 一つのJacobi値。実行と保存prefix検査で同じ式を使い、丸め規則を分岐させません。
+    fn next_pressure(&self, index: usize) -> EngineResult<i64> {
+        let node = self.nodes[index];
+        let pressure = if let Some(fixed) = node.fixed {
+            fixed
+        } else {
+            let mut sum = 0i128;
+            let mut count = 0;
+            for other in node.edges.into_iter().flatten() {
+                let other = self.nodes[other as usize];
+                let density = (i128::from(node.input.mass) + i128::from(other.input.mass)) / 2;
+                sum += i128::from(other.old)
+                    + density
+                        * i128::from(self.config.relaxation.gravity_q16)
+                        * (i128::from(node.input.point.y) - i128::from(other.input.point.y));
+                count += 1;
+            }
+            if let Some(source) = node.source {
+                let weight = i128::from(node.input.weight);
+                sum += weight * i128::from(source);
+                count += weight;
+            }
+            if count == 0 {
+                node.old
+            } else {
+                i64::try_from((sum / count).max(0)).map_err(|_| invalid("広域圧力のi64上限"))?
+            }
+        };
+        let value = pressure.max(node.input.pump);
+        if value > node.input.maximum {
+            return Err(invalid("素材の圧力上限"));
+        }
+        Ok(value)
     }
     // 一回の処理は最大四辺だけを触ります。stageの切替自体も一件として数えます。
     fn unit(&mut self) -> EngineResult<()> {
@@ -690,39 +756,7 @@ impl PressureJob {
                 self.cursor = self.root + 1;
             }
             4 if self.cursor < n => {
-                let node = self.nodes[self.cursor];
-                let pressure = if let Some(fixed) = node.fixed {
-                    fixed
-                } else {
-                    let mut sum = 0i128;
-                    let mut count = 0;
-                    for other in node.edges.into_iter().flatten() {
-                        let other = self.nodes[other as usize];
-                        let density =
-                            (i128::from(node.input.mass) + i128::from(other.input.mass)) / 2;
-                        sum += i128::from(other.old)
-                            + density
-                                * i128::from(self.config.relaxation.gravity_q16)
-                                * (i128::from(node.input.point.y)
-                                    - i128::from(other.input.point.y));
-                        count += 1;
-                    }
-                    if let Some(source) = node.source {
-                        let weight = i128::from(node.input.weight);
-                        sum += weight * i128::from(source);
-                        count += weight;
-                    }
-                    if count == 0 {
-                        node.old
-                    } else {
-                        i64::try_from((sum / count).max(0))
-                            .map_err(|_| invalid("広域圧力のi64上限"))?
-                    }
-                };
-                let value = pressure.max(node.input.pump);
-                if value > node.input.maximum {
-                    return Err(invalid("素材の圧力上限"));
-                }
+                let value = self.next_pressure(self.cursor)?;
                 self.nodes[self.cursor].next = value;
                 self.cursor += 1;
             }
