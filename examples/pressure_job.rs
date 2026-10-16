@@ -85,6 +85,7 @@ fn main() -> EngineResult<()> {
             gas: Some(GasPressureSource {
                 temperature: key("example:temperature"),
                 coefficient_q16: 65536,
+                relaxation_weight: 1,
             }),
             pump: None,
         },

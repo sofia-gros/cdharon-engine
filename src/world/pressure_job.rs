@@ -24,6 +24,8 @@ pub struct GasPressureSource {
     /// `floor(Σ(mass * temperature_q16) * coefficient_q16 / (volume * 65536))`。
     /// volumeは活動中の連結した気体・空cell数。0係数は圧力源を無効化します。
     pub coefficient_q16: u32,
+    /// 気体cellのJacobi分母・分子へ加えるtargetの重みlambda。0なら直接の緩和源は無効です。
+    pub relaxation_weight: u32,
 }
 
 /// 広域計算の入力。設定はjobとともに保存され、途中で暗黙に変更されません。
@@ -66,6 +68,7 @@ struct Node {
     edges: [Option<u32>; 4],
     seen: bool,
     fixed: Option<i64>,
+    source: Option<i64>,
     old: i64,
     next: i64,
 }
@@ -212,6 +215,7 @@ impl PressureJob {
                     edges: [None; 4],
                     seen: false,
                     fixed: None,
+                    source: None,
                     old: input.pressure,
                     next: 0,
                 });
@@ -468,14 +472,23 @@ impl PressureJob {
             3 if self.queue_cursor < self.queue.len() => {
                 let index = self.queue[self.queue_cursor] as usize;
                 let node = &mut self.nodes[index];
-                node.fixed = if node.input.kind != 1
+                node.fixed = if node.input.kind == 0
                     || node.input.surface
-                    || (index == self.root && !self.open)
+                    || (node.input.kind == 1 && index == self.root && !self.open)
                 {
                     Some(self.target)
                 } else {
                     None
                 };
+                node.source = if node.input.kind == 2 {
+                    Some(self.target)
+                } else {
+                    None
+                };
+                // 空間の圧力は派生境界としてtargetへ合わせ、正規channelには公開しません。
+                if node.input.kind == 0 {
+                    node.old = self.target;
+                }
                 self.queue_cursor += 1;
             }
             3 => {
@@ -499,6 +512,16 @@ impl PressureJob {
                                 * (i128::from(node.input.point.y)
                                     - i128::from(other.input.point.y));
                         count += 1;
+                    }
+                    if let Some(source) = node.source {
+                        let weight = i128::from(
+                            self.config
+                                .gas
+                                .ok_or_else(|| invalid("気体sourceの設定"))?
+                                .relaxation_weight,
+                        );
+                        sum += weight * i128::from(source);
+                        count += weight;
                     }
                     if count == 0 {
                         node.old
@@ -639,7 +662,7 @@ fn active_empty(world: &World, layer: LayerId, point: CellPoint) -> EngineResult
 
 impl StateCodec for PressureJob {
     fn encode(&self, out: &mut Encoder) -> EngineResult<()> {
-        out.raw(b"CHPRJOB1")?;
+        out.raw(b"CHPRJOB2")?;
         self.world.encode(out)?;
         out.raw(&self.content)?;
         out.u64(self.epoch)?;
@@ -652,6 +675,7 @@ impl StateCodec for PressureJob {
         if let Some(gas) = self.config.gas {
             gas.temperature.encode(out)?;
             out.u32(gas.coefficient_q16)?;
+            out.u32(gas.relaxation_weight)?;
         }
         self.config.pump.encode(out)?;
         out.u32(self.chunks.len() as u32)?;
@@ -675,6 +699,7 @@ impl StateCodec for PressureJob {
             }
             out.u8(u8::from(node.seen))?;
             node.fixed.encode(out)?;
+            node.source.encode(out)?;
             out.i64(node.old)?;
             out.i64(node.next)?;
         }
@@ -698,7 +723,7 @@ impl StateCodec for PressureJob {
         out.u32(self.report.closed_components as u32)
     }
     fn decode(input: &mut Decoder<'_>) -> EngineResult<Self> {
-        if input.raw(8)? != b"CHPRJOB1" {
+        if input.raw(8)? != b"CHPRJOB2" {
             return Err(invalid("広域圧力recordのmagic"));
         }
         let world = WorldId::decode(input)?;
@@ -718,6 +743,7 @@ impl StateCodec for PressureJob {
             Some(GasPressureSource {
                 temperature: StableKey::decode(input)?,
                 coefficient_q16: input.u32()?,
+                relaxation_weight: input.u32()?,
             })
         } else {
             None
@@ -750,6 +776,7 @@ impl StateCodec for PressureJob {
             }
             let seen = boolean(input)?;
             let fixed = Option::<i64>::decode(input)?;
+            let source = Option::<i64>::decode(input)?;
             let old = input.i64()?;
             let next = input.i64()?;
             if kind > 2
@@ -757,6 +784,7 @@ impl StateCodec for PressureJob {
                     .iter()
                     .any(|value| *value < 0)
                 || fixed.is_some_and(|value| value < 0)
+                || source.is_some_and(|value| value < 0)
                 || edges.iter().flatten().any(|index| *index as usize >= count)
                 || (kind == 0 && (material != MaterialId::AIR || mass != 0))
                 || (kind != 0 && (material == MaterialId::AIR || mass == 0))
@@ -777,6 +805,7 @@ impl StateCodec for PressureJob {
                 edges,
                 seen,
                 fixed,
+                source,
                 old,
                 next,
             });

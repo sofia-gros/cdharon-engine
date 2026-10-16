@@ -17,7 +17,7 @@ if job.status() == PressureJobStatus::Ready {
 }
 ```
 
-schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存形式は`CHPRJOB1`。独自solverの採用を制限せず、作者は同じchannel・StateStore・取引APIで別の数値方式や分割規則を使える。
+schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存形式は`CHPRJOB2`。PR初版の`CHPRJOB1`にはlambdaがなく、本版はそのrecordを拒否する。既存保存を読み換える自動migrationは用意せず、作者のschema移行が必要である。独自solverの採用を制限せず、作者は同じchannel・StateStore・取引APIで別の数値方式や分割規則を使える。
 
 ## 従来profileとの一致
 
@@ -31,7 +31,7 @@ schemaは起動時に`Schema::of::<PressureJob>`で登録する。型の保存�
 
 例えばmass2・温度3・容積3なら圧力2、容積2なら圧力3となる。温度はi64の1対1channelから読み、位置固定または同layerの物質追従を選べる。温度と出力圧力は別channelを要求する。係数は作者が指定する非負Q16で、0も有効。負温度・負の入力圧・負のポンプ値、計算のu128積上限・出力i64上限を超える値はエラーにする。
 
-得られたtargetをその気体空間の圧力境界に設定する。公開するのは占有する流体cellのみで、空cellには気体圧を保存しない。block、固体、粉体、液体、World境界、活動外、未読込は気体空間のno-flow境界。有限Worldの部分chunkの外を容積へ含めない。空だけの空間を流体領域の診断件数へ含めず、温度0の気体領域は数える。
+得られたtargetへ、各気体cellを近傍圧と重みlambda（`relaxation_weight`）で緩和する。`Pnext = max(0, trunc((Σ(Pneighbor + rho_avg*g*dy) + lambda*target)/(neighbor_count + lambda)))`。lambda=0も有効で、近傍がなくlambda=0なら前回圧を維持する。空cellの圧力は派生境界としてtargetを使い、気体cellの前回圧をtargetへ直接上書きしない。空間のtargetを計算する係数と、targetへ近付く緩和の重みは別設定である。公開するのは占有する流体cellのみで、空cellには気体圧を保存しない。block、固体、粉体、液体、World境界、活動外、未読込は気体空間のno-flow境界。有限Worldの部分chunkの外を容積へ含めない。空だけの空間を流体領域の診断件数へ含めず、温度0の気体領域は数える。
 
 これはcell占有のゲーム用pressure proxyであり、実在流体の精度、異なる容積のtile流体、圧縮性の連続体計算を保証する方式ではない。圧力だけを理由に気体を発行・消去しない。物質移動は既存の輸送・押出しphaseに任せる。温度は作者が与える状態であり、enthalpyからの温度解決はE06で接続する。
 
@@ -59,4 +59,4 @@ World ID・Content fingerprint・material epoch・活動chunk集合とそのrevi
 
 ## 検証
 
-`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、切断とscratch改変を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3で圧力Q16=131072を検査し、途中保存と連続実行のcheckpoint一致をassertする。
+`tests/pressure_job.rs`で従来profileとの保存byte一致、予算1を含む分割、各計算段階のcodec復元、Worldとjobの同時保存、温度・容積・連結・chunk境界・非活動域・有限境界、ポンプ、lambdaの0・1・3の参照式、入力失効、負値と数値上限、容量不足・無視されたエラーのrollback、切断とscratch改変を検査する。`cargo run --locked --example pressure_job`はmass2・温度3・容積3で圧力Q16=131072を検査し、途中保存と連続実行のcheckpoint一致をassertする。

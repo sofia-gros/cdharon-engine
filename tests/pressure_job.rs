@@ -130,6 +130,7 @@ fn gas_config() -> PressureJobConfig {
         gas: Some(GasPressureSource {
             temperature: key("test:temperature"),
             coefficient_q16: 65536,
+            relaxation_weight: 1,
         }),
         ..config()
     }
@@ -602,4 +603,31 @@ fn finite_world_does_not_count_outside_partial_chunks_as_gas_volume() {
     finish(&mut job, &world, 1);
     world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
     assert_eq!(pressure(&world, p(10, 10)), 2 * 65536);
+}
+
+#[test]
+fn gas_target_is_relaxed_with_configured_lambda_instead_of_overwriting_pressure() {
+    for (weight, expected) in [(0, 0), (1, 3 * 65536), (3, 9 * 65536 / 2)] {
+        let mut world = fixture(8);
+        let layer = layer(&world);
+        let gas = cell(&world, "test:gas");
+        world
+            .edit(|edit| {
+                for x in 10..12 {
+                    edit.set_cell(layer, p(x, 10), gas)?;
+                    edit.set_channel(key("test:temperature"), p(x, 10), 3i64 * 65536)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        let mut config = gas_config();
+        config.relaxation.iterations = 1;
+        config.gas.as_mut().unwrap().relaxation_weight = weight;
+        let mut job = PressureJob::new(&world, layer, config).unwrap();
+        finish(&mut job, &world, 1);
+        world.edit(|edit| edit.publish_pressure_job(&job)).unwrap();
+        for x in 10..12 {
+            assert_eq!(pressure(&world, p(x, 10)), expected);
+        }
+    }
 }

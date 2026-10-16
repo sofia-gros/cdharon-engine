@@ -179,3 +179,9 @@ Linuxクラウド環境・Rust 1.98.1、`CARGO_BUILD_JOBS=2`。
 ### 残作業
 
 広域圧力jobとsourceのAPI追加は、混合・分離、正規物質粒子とpool、全表現の収支、dirty/sleep、物性とproviderの統合を完了するものではない。初期採取・最終公開まで一定時間で分割するschedulerも別途費用設計が必要である。E05全体・Q04は引き続き未通過。commit/push・PRの実レビューを確認し、指摘へ対応してから次の実装単位へ進む。
+
+### 追加照合：気体targetの緩和
+
+初版commit`181da8e`をレビューへ出した後、22の気体式との追加照合で、targetの直接代入を重みlambda付きのJacobi緩和へ修正した。`GasPressureSource.relaxation_weight`を保存し、気体cellでは近傍の圧力・重力項と`lambda × target`を同時に評価する。閉じた液体だけに平均anchorを適用し、気体の最小座標をanchorへ固定しない。空間のtarget境界は派生値で、物質cellの前回圧を直接置き換えない。
+
+lambda0・1・3、隣接気体2cell、1反復の参照式を検査するテストを追加した。全294テスト成功（pressure_job 15、他の内訳は上と同じ）、fmt・全target check・警告拒否Clippy・Rustdoc成功。保存形式を`CHPRJOB2`へ更新し、初版recordを誤って現形式と解釈せず拒否する。旧recordの自動移行はない。作例と修正後の対象テストも再実行した。初版へのレビュー結果を、この修正を含むcommitのレビュー結果として扱わない。
