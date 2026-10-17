@@ -397,10 +397,17 @@ CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs
 | 必須項目 | 現在の判定 |
 | --- | --- |
 | 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。5cfb0cfの実レビュー・CI10件を確認済み |
-| resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | 未完了。混合成分・理由付きreceiptを含めた全表現の保存監査が必要 |
-| 重力・抗力・浮力・摩擦と標準／独自provider統合 | 未完了。型付き状態更新の入口だけで統合済みとしない |
-| 広域移動の保存可能な継続Job | 未完了。phaseの件数超過rollbackを継続処理としない |
+| resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | PR #14で全表現の実量・理由付き台帳を実装。対象18テストと全OS CI10件成功。全Q04の連携監査は未完了 |
+| 重力・抗力・浮力・摩擦と標準／独自provider統合 | PR #15・#16でcellと正規粒子へ追加。対象7テスト成功、両PRのCI各10件成功。Runtimeの作者provider運用・schedule統合は未完了 |
+| 広域移動の保存可能な継続Job | 単一tokenの保存可能なMaterialMotionJobを追加、5件対象テスト成功。多数の同時Job・全Q04は未完了 |
 | dirty/sleep・wake依存とscalar参照のtick比較 | 未完了 |
 | 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
 
-E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、E06へ進まず停止する。
+E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、その後E06の熱・反応工程へ続行する。
+
+#### 単一tokenの広域DDA継続Job（2026-10-17）
+
+codex/e05-wide-motion-job では保存可能な MaterialMotionJob を実装した。広域DDAを一交差単位のbudgetで前進させ、途中のWorld StateStore保存・復元を経ても実経路と計数を保持する。Worldを変更するのはReady後の一回のpublishのみ。入力量の失効・容量超過・不正codecはエラーとし、混合などmaterial-following channelは既存のtransport_pathを使用して追従する。保存形式はCHMMJOB1。
+
+- 省メモリ対象テスト material_motion_job：Windows/MSVC Rust 1.98.1、CARGO_BUILD_JOBS=1・CARGO_PROFILE_TEST_DEBUG=0・CARGO_PROFILE_TEST_CODEGEN_UNITS=1024・CARGO_INCREMENTAL=0で **5件成功、失敗0**。途中StateStore保存、multi-chunk、斜め角の障害、codecの改変、revision失効、移動後payloadと参照DDA一致を検証した。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings も成功。全OS CIとレビュー結果は別途確認して追記する。単一Jobだけで一般の広域移動・dirty/sleepやRuntime Q04の出口を満たしたと判定しない。

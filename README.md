@@ -47,6 +47,8 @@ E05の次の開発単位として、[全表現の物質収支と監査付き保�
 
 さらに[Q16物性と標準・独自力Provider](new_docs/37_MATERIAL_FORCES.md)の実装単位では、素材ごとに重力倍率、抗力、浮力、摩擦を登録し、1tickの力積分と既存DDAを同一原子取引で実行するAPIを追加しています。独自Providerで標準式を完全置換できます。活動域の未読込境界では更新を延期し、力更新の容量不足は移動も含めrollbackします。次の変更単位では正規粒子に同じProviderを接続し、連続Q16位置を保持して粒子DDAと統合する入口を追加中です。広域移動Job、dirty/sleep、RuntimeのQ04統合は引き続き未達であり、この単位だけでE05完了とは判定しません。
 
+[保存可能な広域DDA Job](new_docs/38_MATERIAL_MOTION_JOB.md)も実装中です。単一の非block物質tokenを1交差ずつ検査し、途中のStateStore保存・World復元で進捗を保持したまま、Ready後に既存の全payload輸送を一つの取引で確定します。専用の5件の対象テストで、複数chunk・通常DDAとの一致、斜め角抜け防止、途中保存、古い入力や不正codecの拒否を確認しました。複数Jobの同時競合処理や標準Runtimeの統合、dirty/sleepの省略最適化は引き続き未実装であり、E05/Q04は未達です。
+
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
 ## 動かす
