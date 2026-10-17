@@ -1402,3 +1402,45 @@ fn material_phase_and_particle_only_entry_reject_non_simulated_layer_atomically(
     );
     assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
 }
+
+#[test]
+fn integrated_pressure_and_author_provider_failure_discard_the_entire_world_candidate() {
+    struct RejectSecond;
+    impl MaterialForceProvider for RejectSecond {
+        fn key(&self) -> StableKey {
+            key("test:reject-second")
+        }
+        fn version(&self) -> u32 {
+            1
+        }
+        fn integrate(&self, input: MaterialForceInput<'_>) -> EngineResult<MaterialMotion> {
+            if input.point == p(9, 8) {
+                return Err(charon_engine::foundation::EngineError::new(
+                    charon_engine::foundation::ErrorCode::InvalidState,
+                    "作者Providerが候補途中で失敗",
+                ));
+            }
+            Ok(MaterialMotion {
+                velocity_q16: [65536, 0],
+                ..input.motion
+            })
+        }
+    }
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:liquid", [0, 0]);
+    place(&mut world, layer, p(9, 8), "test:water", [0, 0]);
+    let before = world.checkpoint(4_000_000).unwrap();
+    let mut config = phase(layer);
+    config.pressure = Some(PressureRelaxation {
+        channel: key("test:pressure"),
+        iterations: 4,
+        gravity_q16: 65536,
+        cell_limit: 16,
+    });
+    assert!(
+        world
+            .edit(|edit| edit.step_material_phase(config, &RejectSecond))
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
+}

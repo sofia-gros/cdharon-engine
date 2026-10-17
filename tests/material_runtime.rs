@@ -541,6 +541,25 @@ impl System for ChainedMaterialSystem {
         let sand = terrain
             .content()
             .material_id(MaterialHandle(key("test:sand")))?;
+        if !self.issue_source {
+            // 後段Systemのrun開始時点で、前段barrierの変更を読む。
+            // phase終端で2commandをまとめてflushしただけでは通らない。
+            if at(terrain, layer, p(4, 4)) != sand {
+                return Err(EngineError::new(
+                    ErrorCode::InvalidState,
+                    "前段Materials barrierの地形変更が見えない",
+                ));
+            }
+            let log: MaterialBalanceLog = terrain.state(key("test:balance"))?;
+            if log.receipts().len() != 1
+                || log.receipts()[0].reason().kind != MaterialReceiptKind::Source
+            {
+                return Err(EngineError::new(
+                    ErrorCode::InvalidState,
+                    "前段Materials barrierのsource receiptが見えない",
+                ));
+            }
+        }
         let archive =
             terrain.load_material_archive_inventory(&self.profile, &mut NoArchives, 1_000_000)?;
         let source = self.issue_source;
