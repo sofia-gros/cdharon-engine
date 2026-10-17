@@ -370,3 +370,9 @@ Windows/MSVC・Rust 1.98.1で粒子対象30件、全354テスト成功（失敗�
 | 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
 
 E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、E06へ進まず停止する。
+
+## resident物質量の診断集計（PR検証待ち）
+
+最新粒子PR #10のheadから分岐し、resident cell（inactive chunkも含む）・resident正規粒子の素材別tokenとContent massの集計を追加した。退避領域のpayloadはWorldの外にあるため、archive chunk数と退避粒子数を明示して不完全な合計を全World総量として報告しない。API・対象テストの内容は[36_MATERIAL_INVENTORY](../../36_MATERIAL_INVENTORY.md)を参照。
+
+この記録は実装提出の説明であり、Rustテスト・CI・外部レビュー成功の主張ではない。混合成分とreceipt、外部archive、body local cellとreservoirまでの全表現監査は未完了。物性provider・広域粒子Job・dirty/sleep・Q04も未達で、E05は完了扱いにしない。
