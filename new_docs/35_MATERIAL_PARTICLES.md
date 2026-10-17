@@ -6,7 +6,7 @@
 
 `WorldEdit::emit_material_particle(layer, point, velocity_q16)`が、非空・非blockのcell本体と、対象layerに所属する**全物質channel**を一つの粒子へ移す。flags・variation、energy、timer、混合参照、作者の個体参照も含む。位置固定channelは移動しない。block個体の暗黙の分解は拒否する。参照先の作者storeはWorldに残り、個体参照を失わず追従させる。
 
-一粒子は一cell分を所有する。複数cellの放出は同じWorld取引内で繰り返し、いずれかの容量拒否で全入力を保持する。発行・消費ではなく所有先の移動であり、この操作でSource/Sink receiptを捏造しない。全表現の収支監査は別のE05統合単位として接続する。
+一粒子は一cell分を所有する。複数cellの放出は同じWorld取引内で繰り返し、いずれかの容量拒否で全入力を保持する。発行・消費ではなく所有先の移動であり、この操作でSource/Sink receiptを捏造しない。全表現の収支は[36](36_MATERIAL_ACCOUNTING.md)の監査へ接続する。
 
 `MaterialParticleHandle`はWorld IDと世代付きIDを持ち、StateCodecで作者状態にも保存できる。復元後のWorldへ渡す際に生存と所属を照合する。着地したslotは解放して世代を更新し、古い参照と別Worldへの参照を拒否する。可変参照は公開しない。`material_particles`は退避粒子も列挙するが、退避中はmetadataだけを保持する。
 
@@ -41,3 +41,7 @@ World形式は`CHWORLD2`。従来のWorld情報の後ろへ粒子容量とarena�
 Worldの候補作成は粒子arenaとresident payloadも複製するため、多数の変更は一つのeditへまとめる。放出・payload更新のbyte集計は生存粒子数、着地はchannel数、DDAは通過境界数に依存する。予約集合は通過点数に応じたscratchを使う。件数予算は候補複製・codec・最終validateまで一定時間に制限する保証ではない。正確なscalar経路を先に用意し、最適化はtick比較を通して行う。
 
 `tests/material_particles.rs`は全payloadと混合参照、正確な成分量、pool・byte・着地容量、無視されたエラー、全方向と負座標、端数、角・壁、予約、未準備域、寿命非消失、保存再開、区域所有の移動、退避・復帰、素材remap、旧World形式、切断codecとcapsを検査する。`cargo run --locked --example material_particles`は放出後に途中保存し、連続実行と同じcell・energy=900へ着地することを確認する。
+
+## 全表現の収支との接続
+
+[36の全表現収支](36_MATERIAL_ACCOUNTING.md)は実所有量を集計し、基準と理由付き増減へ照合する。cell・混合・粒子の個別記録を総量へ二重計上しない。標準body physics、物性統合、広域移動、dirty/sleep、RuntimeのQ04完成を示すものではない。

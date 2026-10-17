@@ -59,6 +59,18 @@ pub struct MaterialParticle {
     payload: Vec<(StableKey, Vec<u8>)>,
 }
 impl MaterialParticle {
+    pub(super) fn inventory_reference(&self, key: StableKey) -> EngineResult<super::MixtureRef> {
+        let bytes = self
+            .payload
+            .iter()
+            .find(|(name, _)| *name == key)
+            .ok_or_else(|| invalid("粒子の混合channelが欠落"))?;
+        let mut input = Decoder::new(&bytes.1, bytes.1.len())?;
+        let reference = super::MixtureRef::decode(&mut input)?;
+        input.finish()?;
+        Ok(reference)
+    }
+
     pub(crate) fn evict_payload(&mut self, hash: [u8; 32]) {
         self.payload = Vec::new();
         self.dormant = Some(hash);
@@ -263,7 +275,7 @@ impl World {
     pub(crate) fn validate_particle(&self, particle: &MaterialParticle) -> EngineResult<()> {
         particle.validate_shape()?;
         particle.core.validate(&self.content)?;
-        let layer = self.content.layer(particle.layer)?.key;
+        self.content.layer(particle.layer)?;
         if particle.epoch > self.remaps.epoch() || !self.bounds.contains(particle.cell()) {
             return Err(invalid("粒子のepoch・World境界"));
         }
@@ -283,6 +295,15 @@ impl World {
         if particle.epoch != self.remaps.epoch() {
             return Err(invalid("resident粒子に未適用のremap"));
         }
+        self.validate_particle_payload(particle)
+    }
+
+    /// archive監査でも全channelの型・値・キー列を検査し、混合参照だけの検査にしません。
+    pub(super) fn validate_particle_payload(
+        &self,
+        particle: &MaterialParticle,
+    ) -> EngineResult<()> {
+        let layer = self.content.layer(particle.layer)?.key;
         let mut payload = particle.payload.iter();
         for channel in self
             .channels

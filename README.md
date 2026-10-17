@@ -43,6 +43,8 @@ cellの発行・消費・変換と[理由付きreceipt](new_docs/32_MATERIAL_REC
 
 **最新のローカル検証は、正規物質粒子とレビュー修正を含む全354テスト成功（失敗・無視なし）です。** Windows/MSVC・Rust 1.98.1で、整形・全target check・警告拒否Clippy・Rustdocと粒子の保存再開作例を通過しました。[粒子API](new_docs/35_MATERIAL_PARTICLES.md)ではcellの全物質payloadを放出・DDA・着地まで保持し、所属regionと一緒に退避・復帰します。未処理粒子の開始位置も予約し、対向・追従・高速交差で重ならず、待機中もpayloadと速度を保持します。退避区域を復帰不能にする空気向け粒子remapは登録時に拒否します。Runtime用の保存上限は現在の確定状態を共通codecで計数し、lease・生成要求・Job・作者状態を含めます。状態変更後は再計算します。WorldはCHWORLD2、区域はCHREGN02を出力し、旧CHWORLD1・CHREGN01も粒子ゼロとして読めます。全表現の素材別収支、物性とproviderの統合、広域移動の継続Job、dirty/sleepとQ04は残作業です。詳細は[E05の粒子実装記録](new_docs/evidence/E05/README.md#正規物質粒子の実装単位)を参照してください。
 
+E05の次の開発単位として、[全表現の物質収支と監査付き保存](new_docs/36_MATERIAL_ACCOUNTING.md)を実装中です。resident・archiveのcell・粒子と独自providerが所有する実データを、有理数の混合成分・素材別token/massへ換算し、理由付きの純増減台帳と照合します。archive外へのchannel混入を読み込み時に拒否し、空素材へのremapによる旧混合参照の残留も検査対象に加えました。Windows/MSVCで通常のテストビルドはLLVMのメモリ不足となりましたが、1ジョブ・デバッグ情報なし・1024 codegen unitsで**物質収支の対象18テストが成功**しました（新規のAIR変換テストを含む）。全体テスト・CI・レビューは別途検証中です。**E05とQ04の工程出口は未通過、E06は未着手です。**
+
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
 ## 動かす
@@ -75,6 +77,7 @@ cargo +1.98.1 run --locked --example material_receipts
 cargo +1.98.1 run --locked --example pressure_job
 cargo +1.98.1 run --locked --example material_mixtures
 cargo +1.98.1 run --locked --example material_particles
+cargo +1.98.1 run --locked --example material_accounting
 ```
 
 | 作例 | 内容 |
@@ -88,6 +91,7 @@ cargo +1.98.1 run --locked --example material_particles
 | [material_mixtures.rs](examples/material_mixtures.rs) | 異なる密度の素材の成分を丸めず混合・分離し、途中保存から再開 |
 | [pressure_job.rs](examples/pressure_job.rs) | 気体の温度・連結容積から圧力を求め、分割計算の途中保存から再開 |
 | [material_receipts.rs](examples/material_receipts.rs) | 作者の発行・変換・消費をreceiptへ記録し、地形と同時に保存復元 |
+| [material_accounting.rs](examples/material_accounting.rs) | 混合・粒子・区域退避を含めた全表現の収支を理由付き台帳と照合し、世代保存と再開を検査 |
 
 ## ゲームの作り方
 

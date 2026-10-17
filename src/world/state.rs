@@ -127,6 +127,20 @@ impl World {
     }
     pub(crate) fn validate_state(&self) -> EngineResult<()> {
         self.state.validate()?;
+        for record in self.state.records() {
+            if self
+                .content
+                .schemas
+                .get(record.schema)?
+                .is::<super::MaterialBalanceLog>()
+            {
+                let log = self.state::<super::MaterialBalanceLog>(record.key)?;
+                if log.key() != record.key {
+                    return Err(super::conflict("全表現収支の保存キー"));
+                }
+                log.validate_world(self)?;
+            }
+        }
         for (_, block) in self.blocks.iter() {
             block.validate_state()?;
         }
@@ -185,6 +199,12 @@ impl WorldEdit<'_> {
                 input.finish()?;
                 value.validate_replacement(editor.world, key)?;
             }
+            if definition.is::<super::MaterialBalanceLog>() {
+                let mut input = Decoder::new(&payload, definition.max_bytes())?;
+                let value = super::MaterialBalanceLog::decode(&mut input)?;
+                input.finish()?;
+                value.validate_replacement(editor.world, key)?;
+            }
             let mut transaction = editor.world.state.transaction()?;
             transaction.put_encoded(key, schema, payload)?;
             transaction.commit()?;
@@ -224,6 +244,11 @@ impl WorldEdit<'_> {
             }
             if let Some(log) =
                 (value as &dyn std::any::Any).downcast_ref::<super::MaterialReceiptLog>()
+            {
+                log.validate_replacement(editor.world, key)?;
+            }
+            if let Some(log) =
+                (value as &dyn std::any::Any).downcast_ref::<super::MaterialBalanceLog>()
             {
                 log.validate_replacement(editor.world, key)?;
             }

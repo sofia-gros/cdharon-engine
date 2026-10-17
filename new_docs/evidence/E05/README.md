@@ -358,11 +358,30 @@ phase開始時の全resident粒子のlayer・cellを一度だけ索引化し、�
 
 Windows/MSVC・Rust 1.98.1で粒子対象30件、全354テスト成功（失敗・無視なし）。直前の348件からparticles24が30となり、他の内訳は同じ。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終変更後に全体検証をまとめて1回実行した。push後の最新commitについて実レビューとCIを確認する。
 
+### 正規粒子の実装単位のレビュー・CI通過
+
+対象commitは`5cfb0cf465e051be179c20f9817b268ca6d85214`。[対象commitを明記した実レビュー結果](https://github.com/sofia-gros/charon-engine/pull/10#issuecomment-6225740083)で重大な指摘なしを確認した。レビュー要約のcompleted表示だけを根拠にしていない。帰属する新規inline指摘はなく、既存指摘へ回答・解決済み。
+
+CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs/38974348824)、[E03](https://github.com/sofia-gros/charon-engine/actions/runs/38974348880)、[E04](https://github.com/sofia-gros/charon-engine/actions/runs/38974348734)、[E05](https://github.com/sofia-gros/charon-engine/actions/runs/38974348853)の全workflowが成功した（計10ジョブ）。全354テストとローカル品質検査の結果は直前項を参照する。E05全体は未完了のためPR #4〜#10は未マージのまま、次の収支統合単位へ進む。
+
 ### E05出口の未達
+
+#### 全表現収支の追加実装とローカル省メモリ検証（2026-10-17）
+
+作業中の `codex/e05-material-accounting` に、resident・archive・body/reservoirの作者providerを有理量で照合する収支台帳と監査付き世代保存を実装している。この単位は未完了で、E05/Q04の通過を意味しない。前段の正規粒子PR #10と、別ブランチの簡易診断PR #11を不用意に重複マージせず、契約差分を照合する。
+
+今回のレビューでは、region archiveのchannelがhash一致でも別regionの非既定値を含み得る点を修正した。IO入口で格子coverageが完全に対象regionに入ることを検証する。標準terrain/block素材をAIRへremapした場合はmaterial-following channelを同じ候補で消去し、archive内の旧混合参照が消費済みcarrierを再計上しないようにした。小さい格子と粗い格子の境界検査、およびresident+archiveの混合carrierの消費から復帰・保存までの回帰テストを追加した。
+
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 1`：当初の物質収支変更で成功。AIR/remapと新規archive境界テスト後の再実行結果は追記する。
+- `cargo test --locked --test material_accounting -j 2`：LLVMメモリ確保失敗でビルド中断。対象テストは未実行。
+- `CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --locked --test material_accounting -j 1`：同様にLLVMメモリ確保失敗。テストが不合格だったと解釈しない。
+- `CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_CODEGEN_UNITS=1024 CARGO_INCREMENTAL=0 cargo test --locked --test material_accounting --jobs 1`：Windows/MSVC・Rust 1.98.1で**18件成功、失敗・無視0件**。新規の混合AIR変換テストを含む。3分49秒でビルドとテストを完走した。全体試験・Rustdoc・レビュー結果とは混同しない。
+
+**残課題：** 物性/標準・独自Provider、広域移動の保存可能な継続Job、dirty/sleepの参照比較、RuntimeのQ04統合は未実装。したがってE06への移行条件を満たしていない。
 
 | 必須項目 | 現在の判定 |
 | --- | --- |
-| 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。外部レビューとCIは提出後に確認する |
+| 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。5cfb0cfの実レビュー・CI10件を確認済み |
 | resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | 未完了。混合成分・理由付きreceiptを含めた全表現の保存監査が必要 |
 | 重力・抗力・浮力・摩擦と標準／独自provider統合 | 未完了。型付き状態更新の入口だけで統合済みとしない |
 | 広域移動の保存可能な継続Job | 未完了。phaseの件数超過rollbackを継続処理としない |
