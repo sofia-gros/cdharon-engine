@@ -437,3 +437,12 @@ codex/e05-scalar-sleep ブランチでは単に最後のtickで交換数が0だ�
 
 - Windows/MSVC Rust 1.98.1、省メモリ対象テストmaterial_scalar_sleepは**3件成功、失敗0**。封じ込め粉液気の10tick参照比較、別chunk編集と通路解放によるwake、動く粉体の未睡眠、候補予算の失敗維持、保存cacheの復元時再評価を検査した。
 - cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings は成功。親PR #18は全OS CI10件成功。ただしこの追加ブランチのCI/レビューは提出後に別途検証し、E05/Q04全体を合格扱いにしない。
+
+#### Q04の全表現所有権連鎖とRuntimeのSource receipt・既定編集互換（2026-10-17）
+
+codex/e05-q04-cross-representation では既存PR #4〜#10と#14〜#20の個別実装を同一Worldの連続処理としてテストした。素材mass 5と3を比率1:3でcarrier mass 4に混合した場合、3carrierの純tokenはa=6/7、b=18/7。比率を純token比1/4,3/4と誤解した初回テストは失敗し、MixtureStoreの実質量換算を確認して期待値を修正した。通常scalar移動で追従するMixtureRef、正規粒子への所有権、archive退避、World保存復元、region復帰をすべて同じbaselineと独自body/reservoir Providerの実量で照合し、候補容量不足が全体rollbackになることも確認した。
+
+Runtimeは専用の監査付き入口でSourceの純増を理由付きreceiptとして保存し、公開後のWorld/Runtime時計と台帳を復元照合した。旧edit_terrainとWorldAccess::setを全台帳Worldで禁止する初回案は、独立レビューで設計書36の「raw編集は可能で、後続verifyで未記録増減を検出する」契約およびUI/debug状態の作者拡張性を壊すと指摘されたため撤回した。既定のraw地形編集は成功するが後続の全表現verifyが失敗すること、独立したu64作者recordは台帳と共存できることをテストする。監査を要求する作者Systemは明示して専用入口を使う。複数台帳を一つの申告で自動認証済みとは扱わない。
+
+- 低メモリWindows/MSVC Rust 1.98.1、単一ジョブ、debug情報無効・1024 codegen units・incremental無効：material_accounting **19件成功、失敗0**、material_runtime **7件成功、失敗0**。同一Materials barrierでraw変更→監査前照合失敗→Runtime tick全体のrollbackも検証。有理量の初期失敗は実装不具合ではなくテスト期待値の解釈違いであり、修正後に全件通過した。
+- 変更後の全ターゲットcheckと警告拒否Clippy、CI、コードレビューの再検証結果を別途追記する。Q04完全判定は多数Job・圧力連成・動的依存halo・Runtime複数barrier/worker・ストリーミング順まで必要。
