@@ -13,7 +13,7 @@ mod content;
 mod generation;
 mod jobs;
 mod material_components;
-mod material_inventory;
+
 mod material_forces;
 mod material_mixtures;
 mod material_motion;
@@ -41,7 +41,7 @@ pub use content::*;
 pub use generation::*;
 pub use jobs::*;
 pub use material_components::*;
-pub use material_inventory::*;
+
 pub use material_forces::*;
 pub use material_mixtures::*;
 pub use material_motion::*;

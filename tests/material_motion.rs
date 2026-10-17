@@ -555,10 +555,15 @@ fn phase_rejects_wrong_motion_ownership_type_and_missing_channels_without_change
 #[test]
 fn force_provider_preserves_remainder_and_checkpoint() {
     let (mut world, layer) = world();
-    place(&mut world, layer, p(3, 3), MaterialMotion {
-        velocity_q16: [20000, 0],
-        remainder_q16: [1234, -777],
-    });
+    place(
+        &mut world,
+        layer,
+        p(3, 3),
+        MaterialMotion {
+            velocity_q16: [20000, 0],
+            remainder_q16: [1234, -777],
+        },
+    );
     let uniform = UniformMaterialForces {
         gravity_q16: 16384,
         gas_buoyancy_q16: 32768,
@@ -570,20 +575,31 @@ fn force_provider_preserves_remainder_and_checkpoint() {
         .edit(|edit| edit.apply_material_forces(layer, key("test:motion"), &uniform, 10))
         .unwrap();
     assert_eq!((report.candidates, report.updated), (1, 1));
-    assert_eq!(state(&world, p(3, 3)), MaterialMotion {
-        velocity_q16: [19000, 16384],
-        remainder_q16: [1234, -777],
-    });
+    assert_eq!(
+        state(&world, p(3, 3)),
+        MaterialMotion {
+            velocity_q16: [19000, 16384],
+            remainder_q16: [1234, -777],
+        }
+    );
     let bytes = world.checkpoint(4_000_000).unwrap();
-    let restored = World::restore(&bytes, Arc::clone(world.content()), WorldLimits::default(), 4_000_000)
-        .unwrap();
+    let restored = World::restore(
+        &bytes,
+        Arc::clone(world.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
     assert_eq!(state(&restored, p(3, 3)), state(&world, p(3, 3)));
 }
 
 struct SelectiveForces;
 
 impl MaterialForceProvider for SelectiveForces {
-    fn evaluate(&self, input: MaterialForceInput) -> charon_engine::foundation::EngineResult<[i64; 2]> {
+    fn evaluate(
+        &self,
+        input: MaterialForceInput,
+    ) -> charon_engine::foundation::EngineResult<[i64; 2]> {
         if input.point == p(3, 3) {
             return Err(charon_engine::foundation::EngineError::new(
                 charon_engine::foundation::ErrorCode::InvalidValue,
@@ -600,16 +616,25 @@ fn custom_force_provider_failure_rolls_back_all_cells_even_if_ignored() {
     place(&mut world, layer, p(1, 3), motion([0, 0]));
     place(&mut world, layer, p(3, 3), motion([0, 0]));
     let before = world.checkpoint(4_000_000).unwrap();
-    assert!(world
-        .edit(|edit| {
-            let _ = edit.apply_material_forces(layer, key("test:motion"), &SelectiveForces, 10);
-            Ok(())
-        })
-        .is_err());
+    assert!(
+        world
+            .edit(|edit| {
+                let _ = edit.apply_material_forces(layer, key("test:motion"), &SelectiveForces, 10);
+                Ok(())
+            })
+            .is_err()
+    );
     assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
-    assert!(world
-        .edit(|edit| edit.apply_material_forces(layer, key("test:position-motion"), &SelectiveForces, 10))
-        .is_err());
+    assert!(
+        world
+            .edit(|edit| edit.apply_material_forces(
+                layer,
+                key("test:position-motion"),
+                &SelectiveForces,
+                10
+            ))
+            .is_err()
+    );
     assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
 }
 
@@ -631,16 +656,20 @@ fn gas_buoyancy_and_invalid_uniform_limits_are_explicit() {
         motion: MaterialMotion::default(),
     };
     assert_eq!(uniform.evaluate(input).unwrap(), [0, -12000]);
-    assert!(UniformMaterialForces {
-        drag_q16: 65537,
-        ..uniform
-    }
-    .evaluate(input)
-    .is_err());
-    assert!(UniformMaterialForces {
-        maximum_velocity_q16: 1000,
-        ..uniform
-    }
-    .evaluate(input)
-    .is_err());
+    assert!(
+        UniformMaterialForces {
+            drag_q16: 65537,
+            ..uniform
+        }
+        .evaluate(input)
+        .is_err()
+    );
+    assert!(
+        UniformMaterialForces {
+            maximum_velocity_q16: 1000,
+            ..uniform
+        }
+        .evaluate(input)
+        .is_err()
+    );
 }

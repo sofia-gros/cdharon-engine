@@ -5,11 +5,9 @@
 //! 作者が独立したschema/実行profileで管理する。
 
 use super::{
-    CellQuery, ChannelQuery, LayerId, MaterialBase, MaterialMotion, MaterialId, WorldEdit, invalid,
+    CellQuery, ChannelQuery, LayerId, MaterialBase, MaterialId, MaterialMotion, WorldEdit, invalid,
 };
-use crate::foundation::{
-    EngineError, EngineResult, StableKey, error::allocation, grid::CellPoint,
-};
+use crate::foundation::{EngineError, EngineResult, StableKey, error::allocation, grid::CellPoint};
 
 const SCALE: i128 = 65536;
 
@@ -99,8 +97,7 @@ impl MaterialForceProvider for UniformMaterialForces {
                     self.maximum_velocity_q16 as u64,
                 ));
             }
-            *value = i64::try_from(updated)
-                .map_err(|_| invalid("物質力の速度表現範囲"))?;
+            *value = i64::try_from(updated).map_err(|_| invalid("物質力の速度表現範囲"))?;
         }
         Ok(velocities)
     }
@@ -128,10 +125,19 @@ impl WorldEdit<'_> {
     ) -> EngineResult<MaterialForceReport> {
         self.run(|editor| {
             let layer_key = editor.world.content.layer(layer)?.key;
-            if editor.world.channel_material_layer::<MaterialMotion>(channel)? != Some(layer_key) {
-                return Err(invalid("物質力の速度channelは対象layerに追従する必要がある"));
+            if editor
+                .world
+                .channel_material_layer::<MaterialMotion>(channel)?
+                != Some(layer_key)
+            {
+                return Err(invalid(
+                    "物質力の速度channelは対象layerに追従する必要がある",
+                ));
             }
-            let origin = editor.world.channel_layout::<MaterialMotion>(channel)?.origin;
+            let origin = editor
+                .world
+                .channel_layout::<MaterialMotion>(channel)?
+                .origin;
             let points = editor.material_candidates(layer, candidate_limit)?;
             let mut report = MaterialForceReport {
                 candidates: points.len(),
@@ -160,7 +166,10 @@ impl WorldEdit<'_> {
                         .checked_sub(origin.y)
                         .ok_or_else(|| invalid("力channel座標y"))?,
                 };
-                let motion = match editor.world.channel_value::<MaterialMotion>(channel, coordinate)? {
+                let motion = match editor
+                    .world
+                    .channel_value::<MaterialMotion>(channel, coordinate)?
+                {
                     ChannelQuery::Loaded(value) => value,
                     _ => return Err(invalid("力channelのcoverage")),
                 };
