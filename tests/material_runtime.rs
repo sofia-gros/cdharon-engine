@@ -69,6 +69,7 @@ fn build_content() -> Arc<Content> {
 struct AuditedMaterialSystem {
     profile: Arc<MaterialInventoryProfile>,
     inject_unrecorded_source: bool,
+    swallow_nested_error: bool,
 }
 impl System for AuditedMaterialSystem {
     fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
@@ -91,34 +92,51 @@ impl System for AuditedMaterialSystem {
         };
         let profile = Arc::clone(&self.profile);
         let fail = self.inject_unrecorded_source;
-        worlds.edit_terrain_world(id, move |world| {
-            world.edit_material_accounted(
-                &profile,
-                &archive,
-                key("test:balance"),
-                key("test:balance-schema"),
-                None,
-                |edit| {
-                    edit.transport_path(layer, &[p(2, 1), p(1, 1)])?;
-                    if fail {
-                        edit.set_cell(
-                            layer,
-                            p(3, 1),
-                            CellCore {
-                                material,
-                                ..CellCore::AIR
-                            },
-                        )?;
-                    }
-                    Ok(())
-                },
-            )
-        })?;
+        let swallow = self.swallow_nested_error;
+        worlds.edit_material_accounted(
+            id,
+            charon_engine::runtime::MaterialAccountingSubmission {
+                profile,
+                archives: archive,
+                key: key("test:balance"),
+                schema: key("test:balance-schema"),
+                reason: None,
+            },
+            move |edit| {
+                edit.transport_path(layer, &[p(2, 1), p(1, 1)])?;
+                if swallow {
+                    // 意図的にErrを無視しても、WorldEditは失敗を覚えており
+                    // 先行の正常な物質移動をcommitしてはならない。
+                    let _ = edit.set_cell(
+                        layer,
+                        p(1024, 1024),
+                        CellCore {
+                            material,
+                            ..CellCore::AIR
+                        },
+                    );
+                }
+                if fail {
+                    edit.set_cell(
+                        layer,
+                        p(3, 1),
+                        CellCore {
+                            material,
+                            ..CellCore::AIR
+                        },
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
         Ok(WorkStatus::Complete)
     }
 }
 
-fn engine(fail: bool) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
+fn engine_with_failure(
+    fail: bool,
+    swallow: bool,
+) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
     let content = build_content();
     let profile = Arc::new(profile());
     let init_profile = Arc::clone(&profile);
@@ -165,11 +183,15 @@ fn engine(fail: bool) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
             AuditedMaterialSystem {
                 profile: Arc::clone(&profile),
                 inject_unrecorded_source: fail,
+                swallow_nested_error: swallow,
             },
         )
         .build()
         .unwrap();
     (runtime, content, profile)
+}
+fn engine(fail: bool) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
+    engine_with_failure(fail, false)
 }
 fn at(world: &World, layer: LayerId, point: CellPoint) -> MaterialId {
     match world.cell(layer, point).unwrap() {
@@ -229,4 +251,29 @@ fn runtime_rejects_unaccounted_source_and_rolls_back_entire_tick() {
             .material_id(MaterialHandle(key("test:sand")))
             .unwrap()
     );
+}
+
+#[test]
+fn ignored_nested_edit_error_cannot_publish_a_partial_material_tick() {
+    let (mut runtime, content, profile) = engine_with_failure(false, true);
+    let id = runtime.worlds().id("world").unwrap();
+    let before = runtime.worlds().checkpoint(id).unwrap();
+    assert!(runtime.step(TickInput::empty(1)).is_err());
+    assert_eq!(runtime.worlds().tick(id).unwrap(), 0);
+    assert_eq!(runtime.worlds().checkpoint(id).unwrap(), before);
+    let terrain = runtime.worlds().terrain(id).unwrap();
+    let layer = content.layer_id(key("test:layer")).unwrap();
+    assert_eq!(
+        at(terrain, layer, p(1, 1)),
+        content
+            .material_id(MaterialHandle(key("test:sand")))
+            .unwrap()
+    );
+    assert_eq!(at(terrain, layer, p(2, 1)), MaterialId::AIR);
+    let archives = terrain
+        .load_material_archive_inventory(&profile, &mut NoArchives, 1_000_000)
+        .unwrap();
+    terrain
+        .verify_material_accounting(&profile, &archives, key("test:balance"))
+        .unwrap();
 }

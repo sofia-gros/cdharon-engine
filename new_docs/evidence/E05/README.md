@@ -416,10 +416,20 @@ codex/e05-wide-motion-job では保存可能な MaterialMotionJob を実装し�
 
 ブランチ codex/e05-sleep-wake-reference。作者Providerや圧力・正規粒子へ省略の誤用がないよう、全active素材の停止証明がある標準のforce+DDAだけを対象とする MaterialSleepTracker を追加した。chunk revision、World/Content、設定とremap epochを照合して失効時は参照経路へ戻る。decode後のcacheは未検証として信頼せず再計算し、重力側未読込でforceにwaitingがある場合は省略しない。正規Worldが変更されなくても空のWorld取引で参照側と同じrevisionを進める。
 
-Runtimeは従来のWorldEdit callbackに加えWorld全体の編集callbackをMaterials barrierで扱う入口を追加した。作者が World::edit_material_accounted のProfileとarchive snapshotを移譲し、理由のない物質発行があれば同tick候補の地形・台帳・時計を全てrollbackする。従来のWorldAccessと同じアクセス宣言とtick制約を適用する。
+RuntimeのMaterials barrierにWorld全体の収支監査を接続した。当初の汎用World全体の編集callbackは独立レビューで、別Worldへの置換と複数編集のエラー握り潰しによる部分公開を許すと判明したため廃止した。代わりに専用の edit_material_accounted がProfile・archive派生入力・台帳・単一WorldEdit callbackを受け取り、1つのpoison可能な候補で地形・台帳・時計を全てrollbackする。従来と同じアクセス宣言とtick制約を適用する。
 
 - Windows/MSVC Rust 1.98.1。CARGO_BUILD_JOBS=1、CARGO_PROFILE_TEST_DEBUG=0、CARGO_PROFILE_TEST_CODEGEN_UNITS=1024、CARGO_INCREMENTAL=0を適用した対象テスト：material_forces **11件成功（失敗0）**、material_runtime **2件成功（失敗0）**。未読込隣接でwaitingを失わない検査、World毎tickのcheckpoint一致、cache保存復元時の参照fallback、source未記録でのRuntime tick rollbackを含む。
 - 全OS CI・全体品質チェック・コードレビューはPR提出後に結果を追記する。Q04全体の合格証明ではない。
+
+#### 独立レビューの重大指摘：Runtime原子性と異World分岐Sleep（2026-10-17）
+
+PR #18の独立レビューで2種類の問題が確定した。Runtimeへ導入した汎用World編集callbackは別のWorldへ置換でき、複数World::editの片方のエラーを握り潰して部分commit可能で、未確定候補からSaveRepositoryへ外部IO副作用も起こせた。codex/e05-runtime-accounting-guard で汎用入口を撤回し、MaterialAccountingSubmissionとpoison可能な単一WorldEditを受け付ける WorldAccess::edit_material_accounted へ変更した。callback内で正常な輸送後に不正なcell書込のErrを無視しても、RuntimeはWorld候補・時計・台帳を公開しない回帰を追加した。
+
+もう一つは同WorldId・同World revision・同chunk revisionの枝分かれWorldに、cloneした検証済みSleepTrackerを渡すと、異なる地形のままskipが通る問題。Worldへ保存しないArc cache世代を導入し、try_copyは世代を共有、地形・活動集合を変更したcommitのみ新しい世代へ進め、World::new/restoreでは別世代とした。force sleepとscalar sleepの両方にcache世代を紐づけ、異World分岐の認証済みcacheをwakeさせる回帰を追加した。
+
+- Windows/MSVC・単一ジョブ・debug=0・codegen-units=1024・incremental無効で、material_forces **12件成功**、material_scalar_sleep **4件成功**、material_runtime **3件成功**、失敗0（合計19件）。正常・異分岐World・容量・保存再開・Runtime途中エラーに対する逐tick比較を含む。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings、cargo doc --lib --locked --no-deps -j 1 は上記修正の試験状態に対して成功。PR #18のGitHub Actions 10/10成功も確認したが、この新しい修正の全OS CIは別途確認する。
+- Q04の粉液気・圧力・混合・粒子・archive・広域Job・外部Provider・Runtime複数Systemとストリーミング交互順を全体で照合する工程は未完了。E05完全実装・E06移行の判定を早めない。
 
 #### 粉液気scalarの休止証明と参照比較（2026-10-17）
 

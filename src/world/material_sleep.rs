@@ -37,6 +37,8 @@ pub struct MaterialSleepStepReport {
 #[derive(Clone, Debug)]
 pub struct MaterialSleepProof {
     world: WorldId,
+    // 純粋な派生cacheなのでStateCodecへは含めません。復元は再検証のみ。
+    cache_generation: Option<std::sync::Arc<()>>,
     content: [u8; 32],
     epoch: u64,
     revision: u64,
@@ -84,6 +86,9 @@ impl MaterialSleepTracker {
         }
         let Some(p) = &self.proof else { return false };
         if p.world != world.id
+            || p.cache_generation
+                .as_ref()
+                .is_none_or(|source| !std::sync::Arc::ptr_eq(source, &world.cache_generation))
             || p.content != world.content.fingerprint()
             || p.epoch != world.remaps.epoch()
             || world.content.layer(layer).is_err()
@@ -212,6 +217,7 @@ impl MaterialSleepTracker {
         }
         Ok(Some(MaterialSleepProof {
             world: world.id,
+            cache_generation: Some(std::sync::Arc::clone(&world.cache_generation)),
             content: world.content.fingerprint(),
             epoch: world.remaps.epoch(),
             revision: world.revision(),
@@ -354,6 +360,7 @@ impl StateCodec for MaterialSleepTracker {
         Ok(Self {
             proof: Some(MaterialSleepProof {
                 world,
+                cache_generation: None,
                 content,
                 epoch,
                 revision,

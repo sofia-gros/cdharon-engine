@@ -17,3 +17,7 @@ ScalarMaterialSleepTracker は標準参照実装 WorldEdit::transport_materials 
 全active集合に対する停止証明なので、1つのchunkだけが動く大規模Worldでも他のchunkの参照輸送は省略しない。chunk単位のdirty bitmap、宣言したread/write半径に基づくhalo wake、圧力Jacobiや正規粒子、熱や作者ruleの独立したsleep証明はまだ必要である。部分的な最適化をE05全体の合格として扱わない。
 
 tests/material_scalar_sleep.rsでは、封じ込めた粉体・液体・気体を10tick以上の通常輸送と比較し、World checkpointの完全一致、別chunk編集によるwake、開いた通路へ流れ始める動的状態、候補予算失敗、cacheの保存復帰後の非信任を検証する。
+
+## 派生cacheのWorld分岐境界
+
+同じWorldId・公開revision・各chunk revisionを持っていても、独立したWorld::restoreやtry_copyから異なる内容を同回数編集した分岐は一致するとは限らない。このためスカラー睡眠証明は、Worldが物質のcommit時に更新する非保存のArc世代も一致させる。cloneされたverified trackerを別分岐に渡す回帰試験は、違う素材のDDAではなく標準粉体の局所落下を省略しないことを確認する。

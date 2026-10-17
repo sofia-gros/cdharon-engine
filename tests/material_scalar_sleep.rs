@@ -211,3 +211,38 @@ fn decoded_scalar_sleep_is_not_trusted_without_reference_world_validation() {
             .is_err()
     );
 }
+
+#[test]
+fn cloned_verified_proof_cannot_sleep_a_different_branch_with_matching_revisions() {
+    let (mut source, layer) = fixture();
+    set(&mut source, layer, p(8, 8), "test:solid");
+    let mut static_branch = restore(&source);
+    let mut moving_branch = restore(&source);
+    // 同じWorldId・世界revision・chunk revisionを作るが内容は異なる。
+    set(&mut static_branch, layer, p(8, 8), "test:solid");
+    set(&mut moving_branch, layer, p(8, 8), "test:sand");
+    let mut proof = ScalarMaterialSleepTracker::default();
+    static_branch
+        .step_scalar_materials_sleeping(&mut proof, layer, 128)
+        .unwrap();
+    assert!(proof.has_proof());
+    moving_branch.edit(|_| Ok(())).unwrap();
+    assert_eq!(static_branch.revision(), moving_branch.revision());
+    let mut stolen = proof.clone();
+    let moving = moving_branch
+        .step_scalar_materials_sleeping(&mut stolen, layer, 128)
+        .unwrap();
+    assert!(
+        !moving.sleeping,
+        "異なる地形のcacheでscalar輸送を省略してはならない"
+    );
+    assert!(moving.woke);
+    let sand = source
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert!(matches!(
+        moving_branch.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == sand
+    ));
+}
