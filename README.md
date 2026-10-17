@@ -45,6 +45,8 @@ cellの発行・消費・変換と[理由付きreceipt](new_docs/32_MATERIAL_REC
 
 E05の次の開発単位として、[全表現の物質収支と監査付き保存](new_docs/36_MATERIAL_ACCOUNTING.md)を実装中です。resident・archiveのcell・粒子と独自providerが所有する実データを、有理数の混合成分・素材別token/massへ換算し、理由付きの純増減台帳と照合します。archive外へのchannel混入を読み込み時に拒否し、空素材へのremapによる旧混合参照の残留も検査対象に加えました。Windows/MSVCで通常のテストビルドはLLVMのメモリ不足となりましたが、1ジョブ・デバッグ情報なし・1024 codegen unitsで**物質収支の対象18テストが成功**しました（新規のAIR変換テストを含む）。全体テスト・CI・レビューは別途検証中です。**E05とQ04の工程出口は未通過、E06は未着手です。**
 
+さらに[Q16物性と標準・独自力Provider](new_docs/37_MATERIAL_FORCES.md)の実装単位では、素材ごとに重力倍率、抗力、浮力、摩擦を登録し、1tickの力積分と既存DDAを同一原子取引で実行するAPIを追加しています。独自Providerで標準式を完全置換できます。活動域の未読込境界では更新を延期し、力更新の容量不足は移動も含めrollbackします。正規粒子への力、広域移動Job、dirty/sleep、RuntimeのQ04統合は引き続き未達であり、この単位だけでE05完了とは判定しません。
+
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
 ## 動かす
@@ -78,6 +80,7 @@ cargo +1.98.1 run --locked --example pressure_job
 cargo +1.98.1 run --locked --example material_mixtures
 cargo +1.98.1 run --locked --example material_particles
 cargo +1.98.1 run --locked --example material_accounting
+cargo +1.98.1 run --locked --example material_forces
 ```
 
 | 作例 | 内容 |
@@ -92,6 +95,7 @@ cargo +1.98.1 run --locked --example material_accounting
 | [pressure_job.rs](examples/pressure_job.rs) | 気体の温度・連結容積から圧力を求め、分割計算の途中保存から再開 |
 | [material_receipts.rs](examples/material_receipts.rs) | 作者の発行・変換・消費をreceiptへ記録し、地形と同時に保存復元 |
 | [material_accounting.rs](examples/material_accounting.rs) | 混合・粒子・区域退避を含めた全表現の収支を理由付き台帳と照合し、世代保存と再開を検査 |
+| [material_forces.rs](examples/material_forces.rs) | 素材ごとの重力Q16・DDAを2tick実行し、連続/途中保存再開の一致を確認 |
 
 ## ゲームの作り方
 

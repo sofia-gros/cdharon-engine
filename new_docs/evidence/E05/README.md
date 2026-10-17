@@ -379,6 +379,14 @@ CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs
 
 **残課題：** 物性/標準・独自Provider、広域移動の保存可能な継続Job、dirty/sleepの参照比較、RuntimeのQ04統合は未実装。したがってE06への移行条件を満たしていない。
 
+#### Q16物性・標準/独自力学Provider（2026-10-17、別の実装単位）
+
+次の開発branchは `codex/e05-material-forces`。全表現収支ブランチのコミットを土台とする。素材Contentに検証済みの重力・抗力・浮力・摩擦Q16とmanifestの拡張を追加した。標準 `StandardMaterialForces` と作者 `MaterialForceProvider` を同じ `MaterialMotion` channelで切り替える。力積分とDDAの一体型APIは、provider失敗と容量不足で丸ごとrollbackする。正規粒子への力や一般形状衝突を実装済みと誤認しない。
+
+テストは `tests/material_forces.rs`、保存再開作例は `examples/material_forces.rs`。この実装単位の検証は対象CargoコマンドとPRのCI結果を確認して追記する。**E05全体とQ04は引き続き未完了**。
+
+対象 `tests/material_forces.rs`：Windows/MSVCで低メモリ設定（`CARGO_BUILD_JOBS=1`、`CARGO_PROFILE_TEST_DEBUG=0`、`CARGO_PROFILE_TEST_CODEGEN_UNITS=1024`、`CARGO_INCREMENTAL=0`、`--jobs 1`）により**5件成功、失敗0件**。初回はWorldの成功取引でrevisionが進むことをテストが無視したため1件失敗し、その後に修正・再実行して全件通過した。作例 `cargo run --locked --example material_forces` も同様の低メモリdev設定で成功（2tickの連続実行と保存再開が一致）。providerの全候補を同じ候補Worldの読取り状態から評価し、その後まとめて速度channelを書き込むよう修正して候補順依存を抑えた。E05工程全体のQAとは区別する。
+
 | 必須項目 | 現在の判定 |
 | --- | --- |
 | 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。5cfb0cfの実レビュー・CI10件を確認済み |
