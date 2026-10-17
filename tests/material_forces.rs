@@ -1012,6 +1012,50 @@ fn material_phase_rejects_non_simulated_layers_without_world_mutation() {
 }
 
 #[test]
+fn world_wide_particle_steps_preserve_non_simulated_layer_owners() {
+    let (mut world, _front) = fixture();
+    let decorative = world.content().layer_id(key("test:decor")).unwrap();
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    let handle = world
+        .edit(|edit| {
+            edit.set_cell(
+                decorative,
+                p(8, 8),
+                CellCore {
+                    material: sand,
+                    ..CellCore::AIR
+                },
+            )?;
+            edit.emit_material_particle(decorative, p(8, 8), [0, 65536])
+        })
+        .unwrap();
+    assert_eq!(
+        world
+            .edit(|edit| edit.integrate_material_particle_forces(
+                MaterialParticleForceConfig {
+                    gravity_q16: [0, 65536],
+                    candidate_limit: 0,
+                    max_velocity_q16: 1_000_000,
+                },
+                &StandardMaterialForces,
+            ))
+            .unwrap()
+            .candidates,
+        0,
+    );
+    let report = world
+        .edit(|edit| edit.step_material_particles(0, 0))
+        .unwrap();
+    assert_eq!(report.processed, 0);
+    let particle = world.material_particle(handle).unwrap();
+    assert_eq!(particle.cell(), p(8, 8));
+    assert_eq!(particle.velocity_q16(), [0, 65536]);
+}
+
+#[test]
 fn integrated_material_phase_pressure_and_scalar_match_reference_same_tick() {
     let (mut baseline, layer) = fixture();
     place(&mut baseline, layer, p(8, 8), "test:liquid", [0, 0]);

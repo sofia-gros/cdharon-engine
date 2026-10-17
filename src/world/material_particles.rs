@@ -630,6 +630,10 @@ impl WorldEdit<'_> {
                 if layer_filter.is_some_and(|layer| particle.layer != layer) {
                     continue;
                 }
+                // 非参加layerは全域呼出でも動かさない。粒子の所有権は保持する。
+                if !editor.world.content.layer(particle.layer)?.simulated {
+                    continue;
+                }
                 if particle.dormant.is_none() && editor.world.chunks.get(&ChunkCoord::at(particle.cell())).is_some_and(|c| c.active) {
                     if ids.len() == candidate_limit { return Err(EngineError::capacity("活動粒子数", ids.len() as u64 + 1, candidate_limit as u64)); }
                     ids.try_reserve(1).map_err(allocation)?;

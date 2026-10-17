@@ -127,10 +127,12 @@ impl WorldEdit<'_> {
                         let vertical = offset(source, 0, dy);
                         let horizontal_free = horizontal.is_some_and(|point| {
                             particle_cells.binary_search(&(point.x, point.y)).is_err()
+                                && !reserved.contains(point)
                         }) && editor
                             .empty_transport_cell(layer, horizontal)?;
                         let vertical_free = vertical.is_some_and(|point| {
                             particle_cells.binary_search(&(point.x, point.y)).is_err()
+                                && !reserved.contains(point)
                         }) && editor.empty_transport_cell(layer, vertical)?;
                         if !horizontal_free && !vertical_free {
                             continue;

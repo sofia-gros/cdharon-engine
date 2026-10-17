@@ -138,7 +138,10 @@ impl MaterialInventoryProfile {
         out.u32(u32::try_from(self.mixtures.len()).map_err(|_| invalid("収支混合定義数"))?)?;
         for binding in &self.mixtures {
             world.content.layer_id(binding.layer)?;
-            if world.channel_material_layer::<MixtureRef>(binding.channel)? != Some(binding.layer) {
+            if world.channel_material_layer::<MixtureRef>(binding.channel)? != Some(binding.layer)
+                || world.validate_channel_updates::<MixtureRef>(binding.channel, &[])?
+                    != MixtureRef::NONE
+            {
                 return Err(invalid("収支の混合channel所有layer"));
             }
             binding.layer.encode(&mut out)?;

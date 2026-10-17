@@ -383,6 +383,9 @@ impl WorldEdit<'_> {
                 if layer_filter.is_some_and(|layer| particle.layer() != layer) {
                     continue;
                 }
+                if !editor.world.content.layer(particle.layer())?.simulated {
+                    continue;
+                }
                 if particle.is_archived() {
                     continue;
                 }
