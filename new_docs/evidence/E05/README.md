@@ -416,7 +416,7 @@ codex/e05-wide-motion-job では保存可能な MaterialMotionJob を実装し�
 
 ブランチ codex/e05-sleep-wake-reference。作者Providerや圧力・正規粒子へ省略の誤用がないよう、全active素材の停止証明がある標準のforce+DDAだけを対象とする MaterialSleepTracker を追加した。chunk revision、World/Content、設定とremap epochを照合して失効時は参照経路へ戻る。decode後のcacheは未検証として信頼せず再計算し、重力側未読込でforceにwaitingがある場合は省略しない。正規Worldが変更されなくても空のWorld取引で参照側と同じrevisionを進める。
 
-Runtimeは従来のWorldEdit callbackに加えWorld全体の編集callbackをMaterials barrierで扱う入口を追加した。作者が World::edit_material_accounted のProfileとarchive snapshotを移譲し、理由のない物質発行があれば同tick候補の地形・台帳・時計を全てrollbackする。従来のWorldAccessと同じアクセス宣言とtick制約を適用する。
+RuntimeのMaterials barrierにWorld全体の収支監査を接続した。当初の汎用World全体の編集callbackは独立レビューで、別Worldへの置換と複数編集のエラー握り潰しによる部分公開を許すと判明したため廃止した。代わりに専用の edit_material_accounted がProfile・archive派生入力・台帳・単一WorldEdit callbackを受け取り、1つのpoison可能な候補で地形・台帳・時計を全てrollbackする。従来と同じアクセス宣言とtick制約を適用する。
 
 - Windows/MSVC Rust 1.98.1。CARGO_BUILD_JOBS=1、CARGO_PROFILE_TEST_DEBUG=0、CARGO_PROFILE_TEST_CODEGEN_UNITS=1024、CARGO_INCREMENTAL=0を適用した対象テスト：material_forces **11件成功（失敗0）**、material_runtime **2件成功（失敗0）**。未読込隣接でwaitingを失わない検査、World毎tickのcheckpoint一致、cache保存復元時の参照fallback、source未記録でのRuntime tick rollbackを含む。
 - 全OS CI・全体品質チェック・コードレビューはPR提出後に結果を追記する。Q04全体の合格証明ではない。
