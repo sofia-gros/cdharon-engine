@@ -1,0 +1,19 @@
+# E05：粉体・液体・気体の標準参照輸送に対する静止証明
+
+## 休止の不変条件
+
+ScalarMaterialSleepTracker は標準参照実装 WorldEdit::transport_materials だけを対象とする派生状態である。シミュレーションに使うchunk.activeを変更せず、World本体や素材・channelの所有権へ影響を与えない。最後に完了した通常輸送で交換がゼロであることに加えて、全active chunkの非空・非block素材に対する合法な交換先が一つも存在しないことを証明する。
+
+粉体は下、左右斜め下。液体は下と左右。気体は上、左右斜め上、左右に候補を持つ。ソース・宛先が活動か、blockが占有していないか、空cellか質量と移動方向で条件を満たす流体か、斜め移動の角の両側が塞がっていないかを整数計算で検査する。**候補が一つでもある場合は寝かせない。** tickの左右交互順を1回だけ観察してsleepを誤判定することを避ける。
+
+## Wakeと保存復帰
+
+証明はWorldId、Content fingerprint、material remap epoch、対象layer、候補予算、全active chunkの座標・revision、Worldの公開revisionへ紐づく。Worldへの書込み・別channel編集・生成/退避/復帰・lease活動集合の変更では失効し、次回は参照輸送へ戻る。省略したtickも空World編集を一回確定し、通常実行と同じrevision進行、候補数と交換数を返す。候補数が上限を超えている可能性を省略によって隠さない。
+
+派生cacheはCHSLSCR1で外部保存できるが、復元後はWorldの正規値を検証していないため必ず参照輸送を一度実行し、再度証明する。著者独自Providerの移動、圧力、粒子、熱、timer、進行中Jobの処理に対して本APIを自動適用しない。複数Systemで依存する独自ruleは作者がそれぞれ実行し、必要に応じてwakeを明示する。
+
+## 現状の限界とQ04
+
+全active集合に対する停止証明なので、1つのchunkだけが動く大規模Worldでも他のchunkの参照輸送は省略しない。chunk単位のdirty bitmap、宣言したread/write半径に基づくhalo wake、圧力Jacobiや正規粒子、熱や作者ruleの独立したsleep証明はまだ必要である。部分的な最適化をE05全体の合格として扱わない。
+
+tests/material_scalar_sleep.rsでは、封じ込めた粉体・液体・気体を10tick以上の通常輸送と比較し、World checkpointの完全一致、別chunk編集によるwake、開いた通路へ流れ始める動的状態、候補予算失敗、cacheの保存復帰後の非信任を検証する。
