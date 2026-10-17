@@ -388,3 +388,7 @@ PR #4の原子的輸送は所有物の位置だけを移し、PR #6のSource/Sin
 ### E05混合成分の有理収支（PR提出・CI未確認）
 
 PR #8の共有組成とPR #10の正規粒子を単一layerのresident領域で合算する`resident_mixture_inventory`を追加。成分有理token/massを混合・放出・checkpoint/restore・着地で比較する公開API試験を追加した。archive、body、reservoir、独自providerと全receiptの総量監査・Q04は未完了。CI結果の確認前に完了と記載しない。
+
+### MaterialMotionの力provider入口（実装提出・検証未確認）
+
+物質に追従するMaterialMotionへ、読み取り専用`MaterialForceProvider`の計算結果を同一World取引で反映する`apply_material_forces`を実装。粉体への下向き重力、気体への一様浮力、Q16抗力、横摩擦の`UniformMaterialForces`を含む。作者providerが失敗した際の全面rollback、端数維持、保存再開、非物質channelの拒否を対象試験に追加。物性のContent manifest統合、周辺温度/圧力の局所入力、完全な標準provider、dirty/sleep・Q04は未達であり、本単位のみでE05完了としない。

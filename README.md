@@ -49,6 +49,8 @@ E05の開発ブランチでは、resident cellと正規粒子の素材別token�
 
 PR #11の集計に加え、PR #12では混合carrierと純成分を区別し、正規粒子に移った組成の分数量を維持する[成分別監査](new_docs/37_MATERIAL_COMPONENTS.md)を開発中です。E05全体・Q04は未完了です。
 
+E05の開発ブランチでは、MaterialMotionへ作者providerの速度計算を適用する[力providerの入口](new_docs/38_MATERIAL_FORCES.md)も実装中です。E05全体・Q04は未完了です。
+
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。
