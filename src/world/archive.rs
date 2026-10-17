@@ -746,6 +746,168 @@ impl WorldEdit<'_> {
         })
     }
 }
+
+impl World {
+    /// 外部archiveの全groupを一度ずつ復号し、residentと合算した素材別tokenを集計します。
+    ///
+    /// checksum、所属World、Content、区域、粒子slot/世代とmetadataを照合します。
+    /// chunk/blockと粒子の保留中remapを論理的に適用して数えますが、Worldは変更しません。
+    /// 各groupのcodec byte上限とgroup数を指定し、超過時には不完全な結果を返しません。
+    /// 混合の成分別数量・receipt・後工程のbody/reservoirは含まない診断APIです。
+    pub fn material_inventory_with_archives(
+        &self,
+        storage: &mut impl ArchiveStorage,
+        max_groups: usize,
+        group_byte_limit: usize,
+    ) -> EngineResult<super::WorldMaterialInventory> {
+        self.validate_archives()?;
+        let resident = self.resident_material_inventory()?;
+        let mut materials = Vec::new();
+        materials
+            .try_reserve_exact(resident.materials.len())
+            .map_err(allocation)?;
+        for item in resident.materials {
+            materials.push(super::WorldMaterialAmount {
+                material: item.material,
+                resident_cell_tokens: item.cell_tokens,
+                resident_particle_tokens: item.particle_tokens,
+                archived_cell_tokens: 0,
+                archived_particle_tokens: 0,
+                total_tokens: 0,
+                nominal_mass: 0,
+            });
+        }
+        let terrain_owner = crate::foundation::StableKey::parse("engine:terrain")?;
+        let block_owner = crate::foundation::StableKey::parse("engine:blocks")?;
+        let particle_owner = crate::foundation::StableKey::parse("engine:particles")?;
+        let mut groups = 0usize;
+        let mut archived_particles = 0usize;
+        for (coord, entry) in &self.archived {
+            if *coord != entry.region.min() {
+                continue;
+            }
+            if groups >= max_groups {
+                return Err(EngineError::capacity(
+                    "素材収支のarchive group数",
+                    groups as u64 + 1,
+                    max_groups as u64,
+                ));
+            }
+            groups += 1;
+            let loaded = self.region_load_task(*coord, group_byte_limit)?.load(storage)?;
+            let mut blocks = BTreeMap::new();
+            for (id, block) in &loaded.blocks {
+                blocks.insert(*id, block);
+            }
+            for chunk in loaded.chunks.values() {
+                for (layer_index, page) in chunk.layers.iter().enumerate() {
+                    let layer = super::LayerId(layer_index as u32);
+                    for (index, core) in page.cells.iter().enumerate() {
+                        let block = page
+                            .blocks
+                            .as_ref()
+                            .and_then(|refs| refs[index])
+                            .map(|id| {
+                                blocks.get(&id).copied().ok_or_else(|| invalid(
+                                    "archive地形のblock参照に対応する個体がない",
+                                ))
+                            })
+                            .transpose()?;
+                        let owner = if block.is_some() { block_owner } else { terrain_owner };
+                        let epoch = block.map_or(chunk.epoch, |block| block.epoch);
+                        let material = self.inventory_resolve(owner, layer, epoch, core.material)?;
+                        increase_archived_inventory(&mut materials, material, false)?;
+                    }
+                }
+            }
+            let expected = self
+                .particles
+                .iter()
+                .filter(|(_, particle)| particle.dormant == Some(loaded.hash))
+                .count();
+            if expected != loaded.particles.len() {
+                return Err(invalid("素材収支のarchive粒子が欠落"));
+            }
+            for (id, particle) in &loaded.particles {
+                let current = self.particles.get(*id)?;
+                if current.dormant != Some(loaded.hash)
+                    || current.position_q16() != particle.position_q16()
+                    || current.velocity_q16() != particle.velocity_q16()
+                    || current.layer != particle.layer
+                    || current.core != particle.core
+                    || current.epoch != particle.epoch
+                {
+                    return Err(invalid("素材収支のarchive粒子metadata不一致"));
+                }
+                let material = self.inventory_resolve(
+                    particle_owner,
+                    particle.layer,
+                    particle.epoch,
+                    particle.core.material,
+                )?;
+                increase_archived_inventory(&mut materials, material, true)?;
+                archived_particles += 1;
+            }
+        }
+        if archived_particles != resident.archived_particles {
+            return Err(invalid("素材収支の休止粒子数不一致"));
+        }
+        for (item, (_, definition)) in materials.iter_mut().zip(self.content.materials()) {
+            item.total_tokens = item
+                .resident_cell_tokens
+                .checked_add(item.resident_particle_tokens)
+                .and_then(|n| n.checked_add(item.archived_cell_tokens))
+                .and_then(|n| n.checked_add(item.archived_particle_tokens))
+                .ok_or_else(|| invalid("素材収支の総token上限"))?;
+            item.nominal_mass = u128::from(item.total_tokens)
+                * u128::from(definition.mass_per_cell());
+        }
+        Ok(super::WorldMaterialInventory { materials, archived_groups: groups })
+    }
+
+    fn inventory_resolve(
+        &self,
+        owner: crate::foundation::StableKey,
+        layer: super::LayerId,
+        epoch: u64,
+        id: super::MaterialId,
+    ) -> EngineResult<super::MaterialId> {
+        let handle = super::MaterialHandle(match self.content.material(id)? {
+            None => crate::foundation::StableKey::parse("engine:air")?,
+            Some(definition) => definition.key(),
+        });
+        let resolved = self.remaps.resolve(
+            owner,
+            self.content.layer(layer)?.key,
+            epoch,
+            handle,
+        )?;
+        self.content.material_id(resolved)
+    }
+}
+
+fn increase_archived_inventory(
+    materials: &mut [super::WorldMaterialAmount],
+    id: super::MaterialId,
+    particle: bool,
+) -> EngineResult<()> {
+    if id == super::MaterialId::AIR {
+        if particle {
+            return Err(invalid("archive物質粒子を空へremapできない"));
+        }
+        return Ok(());
+    }
+    let index = (id.index() - 1) as usize;
+    let amount = materials.get_mut(index).ok_or_else(|| invalid("archiveの素材IDが不正"))?;
+    let count = if particle {
+        &mut amount.archived_particle_tokens
+    } else {
+        &mut amount.archived_cell_tokens
+    };
+    *count = count.checked_add(1).ok_or_else(|| invalid("archive素材token数overflow"))?;
+    Ok(())
+}
+
 fn io(error: std::io::Error) -> EngineError {
     EngineError::new(ErrorCode::Io, "region archiveのI/O").detail(error.to_string())
 }

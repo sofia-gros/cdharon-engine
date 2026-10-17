@@ -334,6 +334,25 @@ fn pr10_archive_is_explicitly_excluded_and_restored_without_loss() {
     assert_eq!(evacuated.archived_chunks, 1);
     assert_eq!(evacuated.archived_particles, 1);
     assert_eq!(amount(&evacuated, "test:sand").total_tokens, 0);
+    let full = world
+        .material_inventory_with_archives(&mut archive, 1, 4_000_000)
+        .unwrap();
+    assert_eq!(full.archived_groups, 1);
+    let sand_full = full
+        .materials
+        .iter()
+        .find(|item| item.material == key("test:sand"))
+        .unwrap();
+    assert_eq!(sand_full.archived_cell_tokens, 1);
+    assert_eq!(sand_full.archived_particle_tokens, 1);
+    assert_eq!(sand_full.total_tokens, 2);
+    assert_eq!(sand_full.nominal_mass, 14);
+    assert!(world
+        .material_inventory_with_archives(&mut archive, 0, 4_000_000)
+        .is_err());
+    assert!(world
+        .material_inventory_with_archives(&mut archive, 1, 1)
+        .is_err());
 
     let bytes = world.checkpoint(4_000_000).unwrap();
     let mut restored = World::restore(
@@ -353,4 +372,88 @@ fn pr10_archive_is_explicitly_excluded_and_restored_without_loss() {
         .unwrap();
     assert!(!restored.material_particle(handle).unwrap().is_archived());
     assert_eq!(restored.resident_material_inventory().unwrap(), initial);
+}
+
+#[test]
+fn archive_material_remap_is_accounted_at_current_epoch_without_rewriting_archive() {
+    let (mut world, front, _) = fixture();
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    world
+        .edit(|editor| {
+            editor.set_cell(
+                front,
+                point(1, 1),
+                CellCore {
+                    material: sand,
+                    ..CellCore::AIR
+                },
+            )?;
+            editor.set_cell(
+                front,
+                point(2, 1),
+                CellCore {
+                    material: sand,
+                    ..CellCore::AIR
+                },
+            )
+        })
+        .unwrap();
+    let handle = world
+        .edit(|editor| editor.emit_material_particle(front, point(1, 1), [0, 0]))
+        .unwrap();
+    let mut archive = MemoryArchives::default();
+    let region = ChunkRegion::single(ChunkCoord::new(0, 0).unwrap()).unwrap();
+    let receipt = world
+        .prepare_eviction(region, 4_000_000)
+        .unwrap()
+        .store(&mut archive)
+        .unwrap();
+    world.edit(|editor| editor.finish_eviction(receipt)).unwrap();
+    let before = world
+        .material_inventory_with_archives(&mut archive, 1, 4_000_000)
+        .unwrap();
+    assert_eq!(before.materials.iter().map(|m| m.total_tokens).sum::<u64>(), 2);
+    world
+        .edit(|editor| {
+            editor.remap_materials(MaterialRemap {
+                owner: key("engine:terrain"),
+                layers: vec![key("test:front")],
+                mappings: vec![(
+                    MaterialHandle(key("test:sand")),
+                    MaterialHandle(key("test:water")),
+                )],
+            })?;
+            Ok(())
+        })
+        .unwrap();
+    let expected = world
+        .material_inventory_with_archives(&mut archive, 1, 4_000_000)
+        .unwrap();
+    let sand = expected
+        .materials
+        .iter()
+        .find(|m| m.material == key("test:sand"))
+        .unwrap();
+    let water = expected
+        .materials
+        .iter()
+        .find(|m| m.material == key("test:water"))
+        .unwrap();
+    assert_eq!(sand.archived_particle_tokens, 1);
+    assert_eq!(sand.archived_cell_tokens, 0);
+    assert_eq!(water.archived_cell_tokens, 1);
+    assert_eq!(sand.total_tokens + water.total_tokens, 2);
+    let loaded = world
+        .region_load_task(ChunkCoord::new(0, 0).unwrap(), 4_000_000)
+        .unwrap()
+        .load(&mut archive)
+        .unwrap();
+    world.edit(|editor| editor.restore_region(loaded)).unwrap();
+    assert!(!world.material_particle(handle).unwrap().is_archived());
+    let restored = world.resident_material_inventory().unwrap();
+    assert_eq!(amount(&restored, "test:sand").total_tokens, 1);
+    assert_eq!(amount(&restored, "test:water").total_tokens, 1);
 }

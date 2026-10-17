@@ -90,6 +90,38 @@ impl World {
     }
 }
 
+
+/// 保存した全区域を含む、素材ごとの計数結果。
+
+/// 物質として所有するcarrier tokenを数えます。混合の有理成分量、itemや
+/// 後工程のbody/reservoirは別の台帳であり、この型だけではQ04の完全監査になりません。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldMaterialAmount {
+    /// Contentの安定素材キー。
+    pub material: StableKey,
+    /// 読込済み地形が所有するtoken。
+    pub resident_cell_tokens: u64,
+    /// 常駐粒子が所有するtoken。
+    pub resident_particle_tokens: u64,
+    /// 永続archive内の地形が所有するtoken。
+    pub archived_cell_tokens: u64,
+    /// 永続archive内の物質粒子が所有するtoken。
+    pub archived_particle_tokens: u64,
+    /// 全四表現の合計token。epoch remap後の素材で集計します。
+    pub total_tokens: u64,
+    /// Content mass_per_cellによる名目mass。混合成分の保存証明ではありません。
+    pub nominal_mass: u128,
+}
+
+/// 外部archiveを実際に読み、checksumと粒子metadataを検証した診断結果。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorldMaterialInventory {
+    /// 素材キー順。空素材を除き、未配置素材もゼロで列挙します。
+    pub materials: Vec<WorldMaterialAmount>,
+    /// 検証して集計したarchive region group数。
+    pub archived_groups: usize,
+}
+
 /// 空cellはtokenを持ちません。不正な素材IDは暗黙に空へ変換せず失敗します。
 fn increase(
     materials: &mut [ResidentMaterialAmount],
