@@ -370,3 +370,17 @@ Windows/MSVC・Rust 1.98.1で粒子対象30件、全354テスト成功（失敗�
 | 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
 
 E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、E06へ進まず停止する。
+
+## resident物質量の診断集計（PR検証待ち）
+
+最新粒子PR #10のheadから分岐し、resident cell（inactive chunkも含む）・resident正規粒子の素材別tokenとContent massの集計を追加した。退避領域のpayloadはWorldの外にあるため、archive chunk数と退避粒子数を明示して不完全な合計を全World総量として報告しない。API・対象テストの内容は[36_MATERIAL_INVENTORY](../../36_MATERIAL_INVENTORY.md)を参照。
+
+この記録は実装提出の説明であり、Rustテスト・CI・外部レビュー成功の主張ではない。混合成分とreceipt、外部archive、body local cellとreservoirまでの全表現監査は未完了。物性provider・広域粒子Job・dirty/sleep・Q04も未達で、E05は完了扱いにしない。
+
+### PR #4〜#10との整合確認と集計診断テストの補強
+
+PR #4の原子的輸送は所有物の位置だけを移し、PR #6のSource/Sinkは理由付きで量を変更する。PR #8の混合ではcarrier素材の名目massと分数の成分収支が異なるため、resident inventoryを全表現の保存証明へ昇格しない。PR #10のregion退避ではarchiveのpayloadを除いた合計を返し、未計上件数を通知する。これらを公開APIの追加試験に接続し、E05の3 OS CIにも新しい試験を登録した。PR #5/#7/#8/#9/#10の既存統合試験・作例は維持する。実行結果はPR CIで確認後に追記する。
+
+### archiveを含む素材別の計数（実行検証待ち）
+
+追加APIがresident/archived地形と粒子をgroup単位で照合し、保存済みregionのhash、World、Content、粒子のID/世代・metadataを検証してから現在epochの素材へ計数する。外部archiveを読み込めない場合、未確認量をゼロとして総量を返さない。混合の分数成分量・receipt・body/reservoirは依然として対象外。
