@@ -47,6 +47,8 @@ E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集�
 
 E05の開発ブランチでは、resident cellと正規粒子の素材別token・massを診断するAPIを追加しています。外部archiveなどの全表現収支監査は引き続き未完了です。詳細は[resident物質量の診断集計](new_docs/36_MATERIAL_INVENTORY.md)を参照してください。
 
+PR #11の集計に加え、PR #12では混合carrierと純成分を区別し、正規粒子に移った組成の分数量を維持する[成分別監査](new_docs/37_MATERIAL_COMPONENTS.md)を開発中です。E05全体・Q04は未完了です。
+
 ## 動かす
 
 CIではRust **1.98.1**を使用しています。開発ブランチはPRで検査し、mainへのpushと手動実行も検査します。同じ開発コミットでpushとPRの検査を重複させません。初回ビルドには依存crateを取得するネットワーク接続が必要です。ウィンドウ表示にはOSの表示環境と対応GPUが必要ですが、headlessの作例はウィンドウなしで動作します。

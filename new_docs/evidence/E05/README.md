@@ -384,3 +384,7 @@ PR #4の原子的輸送は所有物の位置だけを移し、PR #6のSource/Sin
 ### archiveを含む素材別の計数（実行検証待ち）
 
 追加APIがresident/archived地形と粒子をgroup単位で照合し、保存済みregionのhash、World、Content、粒子のID/世代・metadataを検証してから現在epochの素材へ計数する。外部archiveを読み込めない場合、未確認量をゼロとして総量を返さない。混合の分数成分量・receipt・body/reservoirは依然として対象外。
+
+### E05混合成分の有理収支（PR提出・CI未確認）
+
+PR #8の共有組成とPR #10の正規粒子を単一layerのresident領域で合算する`resident_mixture_inventory`を追加。成分有理token/massを混合・放出・checkpoint/restore・着地で比較する公開API試験を追加した。archive、body、reservoir、独自providerと全receiptの総量監査・Q04は未完了。CI結果の確認前に完了と記載しない。

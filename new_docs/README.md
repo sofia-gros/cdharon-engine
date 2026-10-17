@@ -45,6 +45,7 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [29_WORLD_AND_PERSISTENCE.md](29_WORLD_AND_PERSISTENCE.md) | 実装したE04の世界・生成・活動域・独自状態・退避・保存API |
 | [30_MATERIAL_TRANSPORT.md](30_MATERIAL_TRANSPORT.md) | 実装中のE05：物質状態の輸送、局所移動、圧力と押出し探索 |
 | [31_MATERIAL_MOTION.md](31_MATERIAL_MOTION.md) | 実装中のE05：速度・端数の保存と整数格子の複数cell経路検査 |
+| [37_MATERIAL_COMPONENTS.md](37_MATERIAL_COMPONENTS.md) | E05の混合成分と正規粒子の有理token/mass集計 |
 | [36_MATERIAL_INVENTORY.md](36_MATERIAL_INVENTORY.md) | 実装中のE05：常駐cell・粒子の素材別tokenとmassの診断集計、archive未計上の通知 |
 | [35_MATERIAL_PARTICLES.md](35_MATERIAL_PARTICLES.md) | 実装中のE05：全payloadの粒子への移行、DDAと着地、所属regionとの退避・復帰 |
 | [34_MATERIAL_MIXTURES.md](34_MATERIAL_MIXTURES.md) | 実装中のE05：整数比率の共有組成、正確な成分量、混合・分離とreceiptの取引 |
