@@ -36,6 +36,8 @@ tests/material_forces.rsでは同じcheckpointから分岐させたWorldにつ�
 
 tests/material_runtime.rsでは、Runtime Materials phaseの監査付きSystemから、Q16力学と標準scalarを同一取引に統合。3tickの粉体の落下、World/Runtimeの時刻、全表現収支、毎tick checkpoint→World::restore一致を検証する。
 
+Runtimeの順序検証には、同じMaterials phase内で依存順とbarrierを明示した二つのSystemを追加した。前段Systemが理由付きSource、後段Systemが理由付きSinkを同じセルへ行い、同tickの台帳が2件のreceiptを正しい順序で持つことを確認する。後段の未読込セル編集が失敗した場合は、前段のSourceと台帳まで含めてRuntime tick全体が破棄される。
+
 **この結合器だけでE05/Q04は完成しない。** 広域圧力Job・押出しJob・広域DDA Jobを同tickへ公開する際の衝突、混合反応・正規粒子の複数provider、依存halo付きdirty/sleep、IO順とRuntime複数System/workerでの参照同値性は別工程で検証する。E06/Q05の熱・反応は含めない。
 
 全体PRの整理とE05最終マージ順の確定手順は [evidence/E05/PR_MERGE_PLAN.md](evidence/E05/PR_MERGE_PLAN.md) に記録する。

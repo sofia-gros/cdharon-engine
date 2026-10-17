@@ -461,7 +461,7 @@ codex/e05-material-phase-pipeline では各WorldEdit標準処理を WorldEdit::s
 
 - Windows/MSVC省メモリ指定で tests/material_forces **25件成功（失敗0）**。統合APIと共通予約が不要な条件での個別solverの3tick報告・checkpoint完全一致、圧力の同tick参照結果、force更新後のscalar容量失敗、非simulated layerの拒否、セルから正規粒子位置への侵入防止を含む。
 - 独立コードレビューで指定layerとWorld全域canonical粒子処理のスコープ不整合を発見した。従来World全域の力学APIを維持し、粒子DDA・粒子力積分のlayer限定APIを追加して統合phaseから使用するよう修正。2layerを同tickに順次処理する回帰で、他layerの粒子への二重積分・位置変更が発生しないことを検証した。
-- 同じ設定の tests/material_runtime **8件成功（失敗0）**。監査付きのRuntime Materials Systemから統合Q16力学+scalarを3tick実行し、World/Runtime時計・収支・各tickのrestoreが一致した。
+- 同じ設定の tests/material_runtime **10件成功（失敗0）**。監査付きのRuntime Materials Systemから統合Q16力学+scalarを3tick実行し、World/Runtime時計・収支・各tickのrestoreが一致した。さらに別SystemのSource→Sinkを同一Materials phaseで依存順に処理し、理由付き2 receiptを検証。後段の故意の失敗で前段のWorld・台帳・時計をすべてrollbackする。
 - さらに material_particles **30件**、material_motion **12件**、material_transport **25件**も同一省メモリ設定で成功、失敗0。全OS CIは本変更のpush後に再確認する。
 - 独立レビューで同tickのcell DDAとscalarが予約を共有せず、同じ砂を二度移動できる不具合を確認した。統合phase専用の共有CellReservationsを導入し、単独solverの既存挙動は維持した。角の横・縦検査点も先行DDAの予約に反した通過を許さない。World全域の正規粒子APIもsimulated=false layerを対象から除外し、非参加layerの所有物を保持する回帰を追加した。
 - 本実装の全11対象スイートは、単一ジョブの省メモリ設定で全件成功。E05最終マージ順は [PR_MERGE_PLAN.md](PR_MERGE_PLAN.md) の未確定台帳を参照し、Q04終了時に最後のPR本文へ確定して記載する。

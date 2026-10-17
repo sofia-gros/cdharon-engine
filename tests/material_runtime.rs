@@ -524,3 +524,182 @@ fn runtime_materials_phase_pipeline_moves_sand_and_keeps_accounting_over_ticks()
         assert_eq!(restored.checkpoint(snapshot.len()).unwrap(), snapshot);
     }
 }
+
+/// 同じMaterials phaseで別Systemが別の監査receiptを出す。barrier間で
+/// 前の結果を確認し、後段が失敗すると両Systemの編集が全て巻き戻る。
+struct ChainedMaterialSystem {
+    profile: Arc<MaterialInventoryProfile>,
+    issue_source: bool,
+    inject_failure: bool,
+}
+impl System for ChainedMaterialSystem {
+    fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
+        let mut access = ctx.worlds();
+        let id = access.view().id("world")?;
+        let terrain = access.view().terrain(id)?;
+        let layer = terrain.content().layer_id(key("test:layer"))?;
+        let sand = terrain
+            .content()
+            .material_id(MaterialHandle(key("test:sand")))?;
+        let archive =
+            terrain.load_material_archive_inventory(&self.profile, &mut NoArchives, 1_000_000)?;
+        let source = self.issue_source;
+        let fail = self.inject_failure;
+        let profile = Arc::clone(&self.profile);
+        access.edit_material_accounted(
+            id,
+            charon_engine::runtime::MaterialAccountingSubmission {
+                profile,
+                archives: archive,
+                key: key("test:balance"),
+                schema: key("test:balance-schema"),
+                reason: Some(MaterialChangeReason {
+                    key: key(if source {
+                        "test:phase-source"
+                    } else {
+                        "test:phase-sink"
+                    }),
+                    version: 1,
+                    kind: if source {
+                        MaterialReceiptKind::Source
+                    } else {
+                        MaterialReceiptKind::Sink
+                    },
+                }),
+            },
+            move |edit| {
+                edit.set_cell(
+                    layer,
+                    p(4, 4),
+                    CellCore {
+                        material: if source { sand } else { MaterialId::AIR },
+                        ..CellCore::AIR
+                    },
+                )?;
+                if fail {
+                    edit.set_cell(
+                        layer,
+                        p(9999, 9999),
+                        CellCore {
+                            material: sand,
+                            ..CellCore::AIR
+                        },
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(WorkStatus::Complete)
+    }
+}
+
+fn chained_runtime(fail_second: bool) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
+    let content = build_content();
+    let profile = Arc::new(profile());
+    let init_profile = Arc::clone(&profile);
+    let initial_material = content
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    let world = WorldBuilder::new(Arc::clone(&content)).initialize(move |world| {
+        let layer = world.content().layer_id(key("test:layer"))?;
+        world.edit(|edit| {
+            edit.insert_empty_chunk(ChunkCoord::new(0, 0)?)?;
+            edit.acquire_lease(RegionLease {
+                source: key("test:active"),
+                region: ChunkRegion::single(ChunkCoord::new(0, 0)?)?,
+                mode: LeaseMode::Simulate,
+                expires: None,
+            })?;
+            edit.set_cell(
+                layer,
+                p(1, 1),
+                CellCore {
+                    material: initial_material,
+                    ..CellCore::AIR
+                },
+            )
+        })?;
+        let cache =
+            world.load_material_archive_inventory(&init_profile, &mut NoArchives, 1_000_000)?;
+        world.initialize_material_accounting(
+            &init_profile,
+            &cache,
+            key("test:balance"),
+            key("test:balance-schema"),
+            8,
+        )
+    });
+    let source = SystemDescriptor::new(key("test:material-source-system"), Phase::Materials)
+        .write(key("engine:terrain"))
+        .in_world(key("game:world"))
+        .barrier();
+    let sink = SystemDescriptor::new(key("test:material-sink-system"), Phase::Materials)
+        .after(key("test:material-source-system"))
+        .write(key("engine:terrain"))
+        .in_world(key("game:world"))
+        .barrier();
+    let runtime = Engine::builder()
+        .sandbox_world("world", world)
+        .system(
+            source,
+            ChainedMaterialSystem {
+                profile: Arc::clone(&profile),
+                issue_source: true,
+                inject_failure: false,
+            },
+        )
+        .system(
+            sink,
+            ChainedMaterialSystem {
+                profile: Arc::clone(&profile),
+                issue_source: false,
+                inject_failure: fail_second,
+            },
+        )
+        .build()
+        .unwrap();
+    (runtime, content, profile)
+}
+
+#[test]
+fn multiple_runtime_material_systems_commit_in_declared_order_with_two_receipts() {
+    let (mut runtime, content, profile) = chained_runtime(false);
+    let id = runtime.worlds().id("world").unwrap();
+    assert_eq!(
+        runtime.step(TickInput::empty(1)).unwrap(),
+        StepResult::Complete(1)
+    );
+    let terrain = runtime.worlds().terrain(id).unwrap();
+    let layer = content.layer_id(key("test:layer")).unwrap();
+    assert_eq!(at(terrain, layer, p(4, 4)), MaterialId::AIR);
+    let cache = terrain
+        .load_material_archive_inventory(&profile, &mut NoArchives, 1_000_000)
+        .unwrap();
+    terrain
+        .verify_material_accounting(&profile, &cache, key("test:balance"))
+        .unwrap();
+    let log: MaterialBalanceLog = terrain.state(key("test:balance")).unwrap();
+    assert_eq!(log.receipts().len(), 2);
+    assert_eq!(log.receipts()[0].reason().kind, MaterialReceiptKind::Source);
+    assert_eq!(log.receipts()[1].reason().kind, MaterialReceiptKind::Sink);
+    assert_eq!(terrain.tick(), 1);
+}
+
+#[test]
+fn second_materials_system_error_rolls_back_first_system_and_clock() {
+    let (mut runtime, content, profile) = chained_runtime(true);
+    let id = runtime.worlds().id("world").unwrap();
+    let before = runtime.worlds().checkpoint(id).unwrap();
+    assert!(runtime.step(TickInput::empty(1)).is_err());
+    let world = runtime.worlds().terrain(id).unwrap();
+    assert_eq!(world.tick(), 0);
+    assert_eq!(runtime.worlds().checkpoint(id).unwrap(), before);
+    let layer = content.layer_id(key("test:layer")).unwrap();
+    assert_eq!(at(world, layer, p(4, 4)), MaterialId::AIR);
+    let cache = world
+        .load_material_archive_inventory(&profile, &mut NoArchives, 1_000_000)
+        .unwrap();
+    world
+        .verify_material_accounting(&profile, &cache, key("test:balance"))
+        .unwrap();
+}
