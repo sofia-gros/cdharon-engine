@@ -400,7 +400,7 @@ CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs
 | resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | PR #14で全表現の実量・理由付き台帳を実装。対象18テストと全OS CI10件成功。全Q04の連携監査は未完了 |
 | 重力・抗力・浮力・摩擦と標準／独自provider統合 | PR #15・#16でcellと正規粒子へ追加。対象7テスト成功、両PRのCI各10件成功。Runtimeの作者provider運用・schedule統合は未完了 |
 | 広域移動の保存可能な継続Job | 単一tokenの保存可能なMaterialMotionJobを追加、5件対象テスト成功。多数の同時Job・全Q04は未完了 |
-| dirty/sleep・wake依存とscalar参照のtick比較 | 標準force+DDAの静止Sleep/Wakeを追加。逐tick checkpoint一致の対象試験成功。chunk単位の依存距離/粉液気scalar/圧力/粒子/作者ruleでは未完了 |
+| dirty/sleep・wake依存とscalar参照のtick比較 | 標準force+DDAと粉液気scalarの静止証明を追加。毎tickの結果/正規checkpoint一致試験成功。chunk単位の依存距離/圧力/粒子/作者ruleでは未完了 |
 | 公開APIとRuntimeのQ04統合・CI証拠 | Materials barrierからWorld全体の監査付き編集が可能。Runtime対象2試験成功。多System/worker/streamingと全Q04の統合は未完了 |
 
 E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、その後E06の熱・反応工程へ続行する。
@@ -420,3 +420,10 @@ Runtimeは従来のWorldEdit callbackに加えWorld全体の編集callbackをMat
 
 - Windows/MSVC Rust 1.98.1。CARGO_BUILD_JOBS=1、CARGO_PROFILE_TEST_DEBUG=0、CARGO_PROFILE_TEST_CODEGEN_UNITS=1024、CARGO_INCREMENTAL=0を適用した対象テスト：material_forces **11件成功（失敗0）**、material_runtime **2件成功（失敗0）**。未読込隣接でwaitingを失わない検査、World毎tickのcheckpoint一致、cache保存復元時の参照fallback、source未記録でのRuntime tick rollbackを含む。
 - 全OS CI・全体品質チェック・コードレビューはPR提出後に結果を追記する。Q04全体の合格証明ではない。
+
+#### 粉液気scalarの休止証明と参照比較（2026-10-17）
+
+codex/e05-scalar-sleep ブランチでは単に最後のtickで交換数が0だったことでは休止を許さず、すべてのactive非空・非block素材が標準の質量条件・対角corner・両側移動・活動域のどれでも交換先を持たないことを確認する派生cacheを追加した。保存形式CHSLSCR1。復元cacheは未認証で、再びWorldで参照輸送を一度評価するまで高速化には使わない。別chunk・活動集合の変更や候補容量変更でwake、参照と同じrevisionを進める。
+
+- Windows/MSVC Rust 1.98.1、省メモリ対象テストmaterial_scalar_sleepは**3件成功、失敗0**。封じ込め粉液気の10tick参照比較、別chunk編集と通路解放によるwake、動く粉体の未睡眠、候補予算の失敗維持、保存cacheの復元時再評価を検査した。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings は成功。親PR #18は全OS CI10件成功。ただしこの追加ブランチのCI/レビューは提出後に別途検証し、E05/Q04全体を合格扱いにしない。

@@ -51,6 +51,8 @@ E05の次の開発単位として、[全表現の物質収支と監査付き保�
 
 [標準力学の静止Sleep・Wake](new_docs/39_MATERIAL_SLEEP.md)は、全active chunkの速度・端数と物性を確認した恒等証明を、World/Content/epoch/各chunk revisionへ結びつけてキャッシュします。通常力学と省略力学を各tickで比較する検証を追加し、外部編集、素材追加、設定変更、未読込隣接域、キャッシュ復元時には必ず再計算します。独自Providerや正規粒子・圧力を安易にsleepさせず、chunk単位のdirty/halo wakeは引き続きE05の課題です。[RuntimeのMaterials barrier監査入口](new_docs/40_MATERIAL_RUNTIME.md)も追加し、全表現収支の監査を同tick候補内で行い、未記録の素材増加による取引失敗をRuntime tick全体でrollbackします。対象の力学/Sleep 11テストとRuntime 2テストは省メモリMSVC設定で成功。E05全体とQ04はまだ未完了です。
 
+[粉体・液体・気体の標準scalar静止Sleep](new_docs/41_SCALAR_MATERIAL_SLEEP.md)でも、tickの左右交互走査を根拠なく省略せず、両向きの合法な交換先が全active領域にない場合だけキャッシュします。別chunkの編集、通路開放によるwake、毎tickの通常輸送との正規checkpoint一致、保存した証明の再検証、候補容量失敗を公開APIの3テストで確認しました。標準以外のruleや圧力・熱を寝かせる機能ではなく、chunk単位のdirty最適化とQ04全体の統合は未完了です。
+
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
 ## 動かす
