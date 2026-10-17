@@ -19,6 +19,8 @@ use crate::foundation::{
 #[derive(Clone, Debug)]
 struct ScalarSleepProof {
     world: WorldId,
+    /// 同ID・同revisionで枝分かれした別Worldのcacheを誤用しない生存世代。
+    cache_generation: Option<std::sync::Arc<()>>,
     content: [u8; 32],
     epoch: u64,
     revision: u64,
@@ -69,6 +71,10 @@ impl ScalarMaterialSleepTracker {
             return false;
         };
         if proof.world != world.id
+            || proof
+                .cache_generation
+                .as_ref()
+                .is_none_or(|source| !std::sync::Arc::ptr_eq(source, &world.cache_generation))
             || proof.content != world.content.fingerprint()
             || proof.epoch != world.remaps.epoch()
             || proof.candidate_limit != limit
@@ -193,6 +199,7 @@ impl ScalarMaterialSleepTracker {
         }
         Ok(Some(ScalarSleepProof {
             world: world.id,
+            cache_generation: Some(std::sync::Arc::clone(&world.cache_generation)),
             content: world.content.fingerprint(),
             epoch: world.remaps.epoch(),
             revision: world.revision(),
@@ -341,6 +348,7 @@ impl StateCodec for ScalarMaterialSleepTracker {
         Ok(Self {
             proof: Some(ScalarSleepProof {
                 world,
+                cache_generation: None,
                 content,
                 epoch,
                 revision,

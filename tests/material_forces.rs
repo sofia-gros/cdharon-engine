@@ -714,3 +714,57 @@ fn unavailable_neighbor_does_not_turn_reference_wait_into_false_sleep() {
         );
     }
 }
+
+#[test]
+fn force_proof_from_fork_with_same_world_and_chunk_revision_cannot_skip_motion() {
+    let (mut source, layer) = fixture();
+    place(&mut source, layer, p(8, 8), "test:wall", [0, 0]);
+    let base = source.checkpoint(4_000_000).unwrap();
+    let mut stationary = World::restore(
+        &base,
+        Arc::clone(source.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let mut falling = World::restore(
+        &base,
+        Arc::clone(source.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    place(&mut stationary, layer, p(8, 8), "test:wall", [0, 0]);
+    place(&mut falling, layer, p(8, 8), "test:sand", [0, 0]);
+    let mut proven = MaterialSleepTracker::default();
+    stationary
+        .step_standard_material_force_motion_sleeping(
+            &mut proven,
+            layer,
+            force(1_000_000),
+            travel(),
+        )
+        .unwrap();
+    assert!(proven.has_proof());
+    falling.edit(|_| Ok(())).unwrap();
+    assert_eq!(stationary.revision(), falling.revision());
+    let mut foreign = proven.clone();
+    let result = falling
+        .step_standard_material_force_motion_sleeping(
+            &mut foreign,
+            layer,
+            force(1_000_000),
+            travel(),
+        )
+        .unwrap();
+    assert!(!result.sleeping, "別枝の同revision証明を信頼しない");
+    assert!(result.woke);
+    let sand = source
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert!(matches!(
+        falling.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == sand
+    ));
+}

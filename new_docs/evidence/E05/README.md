@@ -421,6 +421,16 @@ RuntimeのMaterials barrierにWorld全体の収支監査を接続した。当初
 - Windows/MSVC Rust 1.98.1。CARGO_BUILD_JOBS=1、CARGO_PROFILE_TEST_DEBUG=0、CARGO_PROFILE_TEST_CODEGEN_UNITS=1024、CARGO_INCREMENTAL=0を適用した対象テスト：material_forces **11件成功（失敗0）**、material_runtime **2件成功（失敗0）**。未読込隣接でwaitingを失わない検査、World毎tickのcheckpoint一致、cache保存復元時の参照fallback、source未記録でのRuntime tick rollbackを含む。
 - 全OS CI・全体品質チェック・コードレビューはPR提出後に結果を追記する。Q04全体の合格証明ではない。
 
+#### 独立レビューの重大指摘：Runtime原子性と異World分岐Sleep（2026-10-17）
+
+PR #18の独立レビューで2種類の問題が確定した。Runtimeへ導入した汎用World編集callbackは別のWorldへ置換でき、複数World::editの片方のエラーを握り潰して部分commit可能で、未確定候補からSaveRepositoryへ外部IO副作用も起こせた。codex/e05-runtime-accounting-guard で汎用入口を撤回し、MaterialAccountingSubmissionとpoison可能な単一WorldEditを受け付ける WorldAccess::edit_material_accounted へ変更した。callback内で正常な輸送後に不正なcell書込のErrを無視しても、RuntimeはWorld候補・時計・台帳を公開しない回帰を追加した。
+
+もう一つは同WorldId・同World revision・同chunk revisionの枝分かれWorldに、cloneした検証済みSleepTrackerを渡すと、異なる地形のままskipが通る問題。Worldへ保存しないArc cache世代を導入し、try_copyは世代を共有、地形・活動集合を変更したcommitのみ新しい世代へ進め、World::new/restoreでは別世代とした。force sleepとscalar sleepの両方にcache世代を紐づけ、異World分岐の認証済みcacheをwakeさせる回帰を追加した。
+
+- Windows/MSVC・単一ジョブ・debug=0・codegen-units=1024・incremental無効で、material_forces **12件成功**、material_scalar_sleep **4件成功**、material_runtime **3件成功**、失敗0（合計19件）。正常・異分岐World・容量・保存再開・Runtime途中エラーに対する逐tick比較を含む。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings、cargo doc --lib --locked --no-deps -j 1 は上記修正の試験状態に対して成功。PR #18のGitHub Actions 10/10成功も確認したが、この新しい修正の全OS CIは別途確認する。
+- Q04の粉液気・圧力・混合・粒子・archive・広域Job・外部Provider・Runtime複数Systemとストリーミング交互順を全体で照合する工程は未完了。E05完全実装・E06移行の判定を早めない。
+
 #### 粉液気scalarの休止証明と参照比較（2026-10-17）
 
 codex/e05-scalar-sleep ブランチでは単に最後のtickで交換数が0だったことでは休止を許さず、すべてのactive非空・非block素材が標準の質量条件・対角corner・両側移動・活動域のどれでも交換先を持たないことを確認する派生cacheを追加した。保存形式CHSLSCR1。復元cacheは未認証で、再びWorldで参照輸送を一度評価するまで高速化には使わない。別chunk・活動集合の変更や候補容量変更でwake、参照と同じrevisionを進める。
