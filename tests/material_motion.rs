@@ -551,7 +551,6 @@ fn phase_rejects_wrong_motion_ownership_type_and_missing_channels_without_change
     }
 }
 
-
 #[test]
 fn force_provider_preserves_remainder_and_checkpoint() {
     let (mut world, layer) = world();
