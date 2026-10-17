@@ -1,7 +1,7 @@
 //! E05のresident収支がcell・粒子の所有権移動と保存復帰で一致することを検証します。
 
 use charon_engine::{
-    foundation::{EngineResult, StableKey, grid::CellPoint, id::WorldId, schema::Schema},
+    foundation::{EngineError, EngineResult, StableKey, grid::CellPoint, id::WorldId, schema::Schema},
     world::*,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -284,7 +284,13 @@ impl ArchiveStorage for MemoryArchives {
 
     fn read(&mut self, hash: [u8; 32], limit: usize) -> EngineResult<Vec<u8>> {
         let value = &self.0[&hash];
-        assert!(value.len() <= limit);
+        if value.len() > limit {
+            return Err(EngineError::capacity(
+                "archive読込byte数",
+                value.len() as u64,
+                limit as u64,
+            ));
+        }
         Ok(value.clone())
     }
 }
