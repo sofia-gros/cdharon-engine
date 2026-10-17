@@ -1,7 +1,9 @@
 //! E05のresident収支がcell・粒子の所有権移動と保存復帰で一致することを検証します。
 
 use charon_engine::{
-    foundation::{EngineError, EngineResult, StableKey, grid::CellPoint, id::WorldId, schema::Schema},
+    foundation::{
+        EngineError, EngineResult, StableKey, grid::CellPoint, id::WorldId, schema::Schema,
+    },
     world::*,
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -353,12 +355,16 @@ fn pr10_archive_is_explicitly_excluded_and_restored_without_loss() {
     assert_eq!(sand_full.archived_particle_tokens, 1);
     assert_eq!(sand_full.total_tokens, 2);
     assert_eq!(sand_full.nominal_mass, 14);
-    assert!(world
-        .material_inventory_with_archives(&mut archive, 0, 4_000_000)
-        .is_err());
-    assert!(world
-        .material_inventory_with_archives(&mut archive, 1, 1)
-        .is_err());
+    assert!(
+        world
+            .material_inventory_with_archives(&mut archive, 0, 4_000_000)
+            .is_err()
+    );
+    assert!(
+        world
+            .material_inventory_with_archives(&mut archive, 1, 1)
+            .is_err()
+    );
 
     let bytes = world.checkpoint(4_000_000).unwrap();
     let mut restored = World::restore(
@@ -417,11 +423,16 @@ fn archive_material_remap_is_accounted_at_current_epoch_without_rewriting_archiv
         .unwrap()
         .store(&mut archive)
         .unwrap();
-    world.edit(|editor| editor.finish_eviction(receipt)).unwrap();
+    world
+        .edit(|editor| editor.finish_eviction(receipt))
+        .unwrap();
     let before = world
         .material_inventory_with_archives(&mut archive, 1, 4_000_000)
         .unwrap();
-    assert_eq!(before.materials.iter().map(|m| m.total_tokens).sum::<u64>(), 2);
+    assert_eq!(
+        before.materials.iter().map(|m| m.total_tokens).sum::<u64>(),
+        2
+    );
     world
         .edit(|editor| {
             editor.remap_materials(MaterialRemap {

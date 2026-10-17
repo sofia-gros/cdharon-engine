@@ -794,7 +794,9 @@ impl World {
                 ));
             }
             groups += 1;
-            let loaded = self.region_load_task(*coord, group_byte_limit)?.load(storage)?;
+            let loaded = self
+                .region_load_task(*coord, group_byte_limit)?
+                .load(storage)?;
             let mut blocks = BTreeMap::new();
             for (id, block) in &loaded.blocks {
                 blocks.insert(*id, block);
@@ -808,14 +810,19 @@ impl World {
                             .as_ref()
                             .and_then(|refs| refs[index])
                             .map(|id| {
-                                blocks.get(&id).copied().ok_or_else(|| invalid(
-                                    "archive地形のblock参照に対応する個体がない",
-                                ))
+                                blocks.get(&id).copied().ok_or_else(|| {
+                                    invalid("archive地形のblock参照に対応する個体がない")
+                                })
                             })
                             .transpose()?;
-                        let owner = if block.is_some() { block_owner } else { terrain_owner };
+                        let owner = if block.is_some() {
+                            block_owner
+                        } else {
+                            terrain_owner
+                        };
                         let epoch = block.map_or(chunk.epoch, |block| block.epoch);
-                        let material = self.inventory_resolve(owner, layer, epoch, core.material)?;
+                        let material =
+                            self.inventory_resolve(owner, layer, epoch, core.material)?;
                         increase_archived_inventory(&mut materials, material, false)?;
                     }
                 }
@@ -859,10 +866,13 @@ impl World {
                 .and_then(|n| n.checked_add(item.archived_cell_tokens))
                 .and_then(|n| n.checked_add(item.archived_particle_tokens))
                 .ok_or_else(|| invalid("素材収支の総token上限"))?;
-            item.nominal_mass = u128::from(item.total_tokens)
-                * u128::from(definition.mass_per_cell());
+            item.nominal_mass =
+                u128::from(item.total_tokens) * u128::from(definition.mass_per_cell());
         }
-        Ok(super::WorldMaterialInventory { materials, archived_groups: groups })
+        Ok(super::WorldMaterialInventory {
+            materials,
+            archived_groups: groups,
+        })
     }
 
     fn inventory_resolve(
@@ -876,12 +886,9 @@ impl World {
             None => crate::foundation::StableKey::parse("engine:air")?,
             Some(definition) => definition.key(),
         });
-        let resolved = self.remaps.resolve(
-            owner,
-            self.content.layer(layer)?.key,
-            epoch,
-            handle,
-        )?;
+        let resolved = self
+            .remaps
+            .resolve(owner, self.content.layer(layer)?.key, epoch, handle)?;
         self.content.material_id(resolved)
     }
 }
@@ -898,13 +905,17 @@ fn increase_archived_inventory(
         return Ok(());
     }
     let index = (id.index() - 1) as usize;
-    let amount = materials.get_mut(index).ok_or_else(|| invalid("archiveの素材IDが不正"))?;
+    let amount = materials
+        .get_mut(index)
+        .ok_or_else(|| invalid("archiveの素材IDが不正"))?;
     let count = if particle {
         &mut amount.archived_particle_tokens
     } else {
         &mut amount.archived_cell_tokens
     };
-    *count = count.checked_add(1).ok_or_else(|| invalid("archive素材token数overflow"))?;
+    *count = count
+        .checked_add(1)
+        .ok_or_else(|| invalid("archive素材token数overflow"))?;
     Ok(())
 }
 
