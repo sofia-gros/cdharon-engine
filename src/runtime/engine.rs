@@ -820,6 +820,23 @@ impl<'a> WorldView<'a> {
     }
 }
 
+/// Runtime候補へ提出する全表現監査の独立入力。
+///
+/// profileとarchiveをcallbackから隠し、作者にWorldの丸ごと交換や
+/// 保存の外部副作用を許さない原子編集境界を構成します。
+pub struct MaterialAccountingSubmission {
+    /// 作者が確定した純物質とProviderの集計定義。
+    pub profile: std::sync::Arc<crate::world::MaterialInventoryProfile>,
+    /// IOを先に完了して検証した、対象Worldのarchive実量。
+    pub archives: crate::world::MaterialArchiveInventory,
+    /// 台帳recordを識別する安定キー。
+    pub key: StableKey,
+    /// 台帳の保存schema。
+    pub schema: StableKey,
+    /// 物質増減を意図する場合のみ明示する理由。
+    pub reason: Option<crate::world::MaterialChangeReason>,
+}
+
 /// 公開Viewの読取と、後のbarrierへ反映する書込を分けたFacade。
 pub struct WorldAccess<'a> {
     pub(crate) worlds: &'a WorldSet,
@@ -878,6 +895,45 @@ impl WorldAccess<'_> {
             self.commands.push(Command::Terrain {
                 world,
                 callback: Box::new(move |terrain| terrain.edit(callback)),
+            })
+        })();
+        self.commands.remember(result)
+    }
+    /// 全表現の物質収支を監査する、一回の原子取引をbarrierへ提出します。
+    ///
+    /// World全体の可変参照をcallbackへ直接渡すと、別Worldへの置換や複数の
+    /// World::editの一部失敗の握り潰しが可能になるため禁止します。
+    /// callbackにはpoisonされた単一WorldEditだけを渡し、呼出中のどの編集が
+    /// 失敗しても収支・地形・Runtimeのtickをすべてrollbackします。
+    /// 作者は事前に検証したarchive派生入力と、Content/作者Providerを確定した
+    /// profileを引数に渡します。IO完了順に依存する入力をcallback内で作りません。
+    pub fn edit_material_accounted(
+        &mut self,
+        world: WorldId,
+        submission: MaterialAccountingSubmission,
+        callback: impl FnOnce(&mut crate::world::WorldEdit<'_>) -> EngineResult<()> + 'static,
+    ) -> EngineResult<()> {
+        let result = (|| {
+            check_access(self.access, StableKey::parse("engine:terrain")?, true)?;
+            if self.worlds.get(world)?.terrain.is_none() {
+                return Err(error(
+                    ErrorCode::UnsupportedCapability,
+                    "sandbox地形を持たないWorld",
+                ));
+            }
+            self.commands.push(Command::Terrain {
+                world,
+                callback: Box::new(move |terrain| {
+                    let MaterialAccountingSubmission {
+                        profile,
+                        archives,
+                        key,
+                        schema,
+                        reason,
+                    } = submission;
+                    terrain
+                        .edit_material_accounted(&profile, &archives, key, schema, reason, callback)
+                }),
             })
         })();
         self.commands.remember(result)

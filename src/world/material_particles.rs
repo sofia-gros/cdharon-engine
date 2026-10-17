@@ -59,6 +59,18 @@ pub struct MaterialParticle {
     payload: Vec<(StableKey, Vec<u8>)>,
 }
 impl MaterialParticle {
+    pub(super) fn inventory_reference(&self, key: StableKey) -> EngineResult<super::MixtureRef> {
+        let bytes = self
+            .payload
+            .iter()
+            .find(|(name, _)| *name == key)
+            .ok_or_else(|| invalid("粒子の混合channelが欠落"))?;
+        let mut input = Decoder::new(&bytes.1, bytes.1.len())?;
+        let reference = super::MixtureRef::decode(&mut input)?;
+        input.finish()?;
+        Ok(reference)
+    }
+
     pub(crate) fn evict_payload(&mut self, hash: [u8; 32]) {
         self.payload = Vec::new();
         self.dormant = Some(hash);
@@ -263,7 +275,7 @@ impl World {
     pub(crate) fn validate_particle(&self, particle: &MaterialParticle) -> EngineResult<()> {
         particle.validate_shape()?;
         particle.core.validate(&self.content)?;
-        let layer = self.content.layer(particle.layer)?.key;
+        self.content.layer(particle.layer)?;
         if particle.epoch > self.remaps.epoch() || !self.bounds.contains(particle.cell()) {
             return Err(invalid("粒子のepoch・World境界"));
         }
@@ -283,6 +295,15 @@ impl World {
         if particle.epoch != self.remaps.epoch() {
             return Err(invalid("resident粒子に未適用のremap"));
         }
+        self.validate_particle_payload(particle)
+    }
+
+    /// archive監査でも全channelの型・値・キー列を検査し、混合参照だけの検査にしません。
+    pub(super) fn validate_particle_payload(
+        &self,
+        particle: &MaterialParticle,
+    ) -> EngineResult<()> {
+        let layer = self.content.layer(particle.layer)?.key;
         let mut payload = particle.payload.iter();
         for channel in self
             .channels
@@ -578,9 +599,41 @@ impl WorldEdit<'_> {
         candidate_limit: usize,
         step_limit: usize,
     ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(None, candidate_limit, step_limit)
+    }
+
+    /// 指定layerだけの活動正規粒子を整数DDAで進めます。未処理の他layerの
+    /// 粒子位置も予約として保持し、異layerの処理順に依存しない結果にします。
+    pub fn step_material_particles_in_layer(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        step_limit: usize,
+    ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(Some(layer), candidate_limit, step_limit)
+    }
+
+    fn step_material_particles_filtered(
+        &mut self,
+        layer_filter: Option<LayerId>,
+        candidate_limit: usize,
+        step_limit: usize,
+    ) -> EngineResult<MaterialParticleReport> {
         self.run(|editor| {
+            if let Some(layer) = layer_filter
+                && !editor.world.content.layer(layer)?.simulated
+            {
+                return Err(invalid("正規粒子の輸送対象はsimulated layerのみ"));
+            }
             let mut ids = Vec::new();
             for (id, particle) in editor.world.particles.iter() {
+                if layer_filter.is_some_and(|layer| particle.layer != layer) {
+                    continue;
+                }
+                // 非参加layerは全域呼出でも動かさない。粒子の所有権は保持する。
+                if !editor.world.content.layer(particle.layer)?.simulated {
+                    continue;
+                }
                 if particle.dormant.is_none() && editor.world.chunks.get(&ChunkCoord::at(particle.cell())).is_some_and(|c| c.active) {
                     if ids.len() == candidate_limit { return Err(EngineError::capacity("活動粒子数", ids.len() as u64 + 1, candidate_limit as u64)); }
                     ids.try_reserve(1).map_err(allocation)?;

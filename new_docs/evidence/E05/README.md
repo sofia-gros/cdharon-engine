@@ -358,15 +358,119 @@ phase開始時の全resident粒子のlayer・cellを一度だけ索引化し、�
 
 Windows/MSVC・Rust 1.98.1で粒子対象30件、全354テスト成功（失敗・無視なし）。直前の348件からparticles24が30となり、他の内訳は同じ。fmt・全target check・警告拒否Clippy/Rustdoc・粒子保存再開作例も成功。反復中は対象試験を使い、最終変更後に全体検証をまとめて1回実行した。push後の最新commitについて実レビューとCIを確認する。
 
+### 正規粒子の実装単位のレビュー・CI通過
+
+対象commitは`5cfb0cf465e051be179c20f9817b268ca6d85214`。[対象commitを明記した実レビュー結果](https://github.com/sofia-gros/charon-engine/pull/10#issuecomment-6225740083)で重大な指摘なしを確認した。レビュー要約のcompleted表示だけを根拠にしていない。帰属する新規inline指摘はなく、既存指摘へ回答・解決済み。
+
+CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs/38974348824)、[E03](https://github.com/sofia-gros/charon-engine/actions/runs/38974348880)、[E04](https://github.com/sofia-gros/charon-engine/actions/runs/38974348734)、[E05](https://github.com/sofia-gros/charon-engine/actions/runs/38974348853)の全workflowが成功した（計10ジョブ）。全354テストとローカル品質検査の結果は直前項を参照する。E05全体は未完了のためPR #4〜#10は未マージのまま、次の収支統合単位へ進む。
+
 ### E05出口の未達
+
+#### 全表現収支の追加実装とローカル省メモリ検証（2026-10-17）
+
+作業中の `codex/e05-material-accounting` に、resident・archive・body/reservoirの作者providerを有理量で照合する収支台帳と監査付き世代保存を実装している。この単位は未完了で、E05/Q04の通過を意味しない。前段の正規粒子PR #10と、別ブランチの簡易診断PR #11を不用意に重複マージせず、契約差分を照合する。
+
+今回のレビューでは、region archiveのchannelがhash一致でも別regionの非既定値を含み得る点を修正した。IO入口で格子coverageが完全に対象regionに入ることを検証する。標準terrain/block素材をAIRへremapした場合はmaterial-following channelを同じ候補で消去し、archive内の旧混合参照が消費済みcarrierを再計上しないようにした。小さい格子と粗い格子の境界検査、およびresident+archiveの混合carrierの消費から復帰・保存までの回帰テストを追加した。
+
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked -j 1`：当初の物質収支変更で成功。AIR/remapと新規archive境界テスト後の再実行結果は追記する。
+- `cargo test --locked --test material_accounting -j 2`：LLVMメモリ確保失敗でビルド中断。対象テストは未実行。
+- `CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0 cargo test --locked --test material_accounting -j 1`：同様にLLVMメモリ確保失敗。テストが不合格だったと解釈しない。
+- `CARGO_BUILD_JOBS=1 CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_CODEGEN_UNITS=1024 CARGO_INCREMENTAL=0 cargo test --locked --test material_accounting --jobs 1`：Windows/MSVC・Rust 1.98.1で**18件成功、失敗・無視0件**。新規の混合AIR変換テストを含む。3分49秒でビルドとテストを完走した。全体試験・Rustdoc・レビュー結果とは混同しない。
+
+**残課題：** 物性/標準・独自Provider、広域移動の保存可能な継続Job、dirty/sleepの参照比較、RuntimeのQ04統合は未実装。したがってE06への移行条件を満たしていない。
+
+#### Q16物性・標準/独自力学Provider（2026-10-17、別の実装単位）
+
+次の開発branchは `codex/e05-material-forces`。全表現収支ブランチのコミットを土台とする。素材Contentに検証済みの重力・抗力・浮力・摩擦Q16とmanifestの拡張を追加した。標準 `StandardMaterialForces` と作者 `MaterialForceProvider` を同じ `MaterialMotion` channelで切り替える。力積分とDDAの一体型APIは、provider失敗と容量不足で丸ごとrollbackする。正規粒子への力や一般形状衝突を実装済みと誤認しない。
+
+テストは `tests/material_forces.rs`、保存再開作例は `examples/material_forces.rs`。この実装単位の検証は対象CargoコマンドとPRのCI結果を確認して追記する。**E05全体とQ04は引き続き未完了**。
+
+対象 `tests/material_forces.rs`：Windows/MSVCで低メモリ設定（`CARGO_BUILD_JOBS=1`、`CARGO_PROFILE_TEST_DEBUG=0`、`CARGO_PROFILE_TEST_CODEGEN_UNITS=1024`、`CARGO_INCREMENTAL=0`、`--jobs 1`）により**5件成功、失敗0件**。初回はWorldの成功取引でrevisionが進むことをテストが無視したため1件失敗し、その後に修正・再実行して全件通過した。作例 `cargo run --locked --example material_forces` も同様の低メモリdev設定で成功（2tickの連続実行と保存再開が一致）。providerの全候補を同じ候補Worldの読取り状態から評価し、その後まとめて速度channelを書き込むよう修正して候補順依存を抑えた。E05工程全体のQAとは区別する。
+
+#### 正規粒子へ標準・独自力学Providerを接続（2026-10-17）
+
+`codex/e05-particle-forces` では前記力学Providerを正規粒子の連続Q16座標へも接続した。速度更新と既存整数DDA/着地を同じ候補へまとめる公開APIを追加し、active粒子だけを世代付きhandleで評価する。providerが粒子では保存不能な端数を返す場合や速度上限・DDA上限を超える場合は全体rollback。参照する粒子の作者payloadは既存のWorld APIで読める。候補は全件評価後に一括書戻し、先行粒子の速度更新へ依存しない。
+
+- 省メモリ単独テスト `cargo test --locked --test material_forces --jobs 1`：**7件成功、失敗0件**。新たに2件の粒子積分/復帰・容量/端数失敗を追加した。
+- Clippy・全ターゲットのチェック・全OS CI・レビューは変更後の成否を確認して追加記録する。この結果はE05/Q04の完成判定ではない。
 
 | 必須項目 | 現在の判定 |
 | --- | --- |
-| 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。外部レビューとCIは提出後に確認する |
-| resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | 未完了。混合成分・理由付きreceiptを含めた全表現の保存監査が必要 |
-| 重力・抗力・浮力・摩擦と標準／独自provider統合 | 未完了。型付き状態更新の入口だけで統合済みとしない |
-| 広域移動の保存可能な継続Job | 未完了。phaseの件数超過rollbackを継続処理としない |
-| dirty/sleep・wake依存とscalar参照のtick比較 | 未完了 |
-| 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
+| 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。5cfb0cfの実レビュー・CI10件を確認済み |
+| resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | PR #14で全表現の実量・理由付き台帳を実装。対象18テストと全OS CI10件成功。全Q04の連携監査は未完了 |
+| 重力・抗力・浮力・摩擦と標準／独自provider統合 | PR #15・#16でcellと正規粒子へ追加。対象7テスト成功、両PRのCI各10件成功。Runtimeの作者provider運用・schedule統合は未完了 |
+| 広域移動の保存可能な継続Job | 単一tokenの保存可能なMaterialMotionJobを追加、5件対象テスト成功。多数の同時Job・全Q04は未完了 |
+| dirty/sleep・wake依存とscalar参照のtick比較 | 標準force+DDAと粉液気scalarの静止証明を追加。毎tickの結果/正規checkpoint一致試験成功。chunk単位の依存距離/圧力/粒子/作者ruleでは未完了 |
+| 公開APIとRuntimeのQ04統合・CI証拠 | Materials barrierからWorld全体の監査付き編集が可能。Runtime対象2試験成功。多System/worker/streamingと全Q04の統合は未完了 |
 
-E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、E06へ進まず停止する。
+E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、その後E06の熱・反応工程へ続行する。
+
+#### 単一tokenの広域DDA継続Job（2026-10-17）
+
+codex/e05-wide-motion-job では保存可能な MaterialMotionJob を実装した。広域DDAを一交差単位のbudgetで前進させ、途中のWorld StateStore保存・復元を経ても実経路と計数を保持する。Worldを変更するのはReady後の一回のpublishのみ。入力量の失効・容量超過・不正codecはエラーとし、混合などmaterial-following channelは既存のtransport_pathを使用して追従する。保存形式はCHMMJOB1。
+
+- 省メモリ対象テスト material_motion_job：Windows/MSVC Rust 1.98.1、CARGO_BUILD_JOBS=1・CARGO_PROFILE_TEST_DEBUG=0・CARGO_PROFILE_TEST_CODEGEN_UNITS=1024・CARGO_INCREMENTAL=0で **5件成功、失敗0**。途中StateStore保存、multi-chunk、斜め角の障害、codecの改変、revision失効、移動後payloadと参照DDA一致を検証した。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings も成功。全OS CIとレビュー結果は別途確認して追記する。単一Jobだけで一般の広域移動・dirty/sleepやRuntime Q04の出口を満たしたと判定しない。
+
+#### 標準force+DDAの保守的Sleep/WakeとRuntime収支統合（2026-10-17）
+
+ブランチ codex/e05-sleep-wake-reference。作者Providerや圧力・正規粒子へ省略の誤用がないよう、全active素材の停止証明がある標準のforce+DDAだけを対象とする MaterialSleepTracker を追加した。chunk revision、World/Content、設定とremap epochを照合して失効時は参照経路へ戻る。decode後のcacheは未検証として信頼せず再計算し、重力側未読込でforceにwaitingがある場合は省略しない。正規Worldが変更されなくても空のWorld取引で参照側と同じrevisionを進める。
+
+RuntimeのMaterials barrierにWorld全体の収支監査を接続した。当初の汎用World全体の編集callbackは独立レビューで、別Worldへの置換と複数編集のエラー握り潰しによる部分公開を許すと判明したため廃止した。代わりに専用の edit_material_accounted がProfile・archive派生入力・台帳・単一WorldEdit callbackを受け取り、1つのpoison可能な候補で地形・台帳・時計を全てrollbackする。従来と同じアクセス宣言とtick制約を適用する。
+
+- Windows/MSVC Rust 1.98.1。CARGO_BUILD_JOBS=1、CARGO_PROFILE_TEST_DEBUG=0、CARGO_PROFILE_TEST_CODEGEN_UNITS=1024、CARGO_INCREMENTAL=0を適用した対象テスト：material_forces **11件成功（失敗0）**、material_runtime **2件成功（失敗0）**。未読込隣接でwaitingを失わない検査、World毎tickのcheckpoint一致、cache保存復元時の参照fallback、source未記録でのRuntime tick rollbackを含む。
+- 全OS CI・全体品質チェック・コードレビューはPR提出後に結果を追記する。Q04全体の合格証明ではない。
+
+#### 独立レビューの重大指摘：Runtime原子性と異World分岐Sleep（2026-10-17）
+
+PR #18の独立レビューで2種類の問題が確定した。Runtimeへ導入した汎用World編集callbackは別のWorldへ置換でき、複数World::editの片方のエラーを握り潰して部分commit可能で、未確定候補からSaveRepositoryへ外部IO副作用も起こせた。codex/e05-runtime-accounting-guard で汎用入口を撤回し、MaterialAccountingSubmissionとpoison可能な単一WorldEditを受け付ける WorldAccess::edit_material_accounted へ変更した。callback内で正常な輸送後に不正なcell書込のErrを無視しても、RuntimeはWorld候補・時計・台帳を公開しない回帰を追加した。
+
+もう一つは同WorldId・同World revision・同chunk revisionの枝分かれWorldに、cloneした検証済みSleepTrackerを渡すと、異なる地形のままskipが通る問題。Worldへ保存しないArc cache世代を導入し、try_copyは世代を共有、地形・活動集合を変更したcommitのみ新しい世代へ進め、World::new/restoreでは別世代とした。force sleepとscalar sleepの両方にcache世代を紐づけ、異World分岐の認証済みcacheをwakeさせる回帰を追加した。
+
+- Windows/MSVC・単一ジョブ・debug=0・codegen-units=1024・incremental無効で、material_forces **12件成功**、material_scalar_sleep **4件成功**、material_runtime **3件成功**、失敗0（合計19件）。正常・異分岐World・容量・保存再開・Runtime途中エラーに対する逐tick比較を含む。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings、cargo doc --lib --locked --no-deps -j 1 は上記修正の試験状態に対して成功。PR #18のGitHub Actions 10/10成功も確認したが、この新しい修正の全OS CIは別途確認する。
+- Q04の粉液気・圧力・混合・粒子・archive・広域Job・外部Provider・Runtime複数Systemとストリーミング交互順を全体で照合する工程は未完了。E05完全実装・E06移行の判定を早めない。
+
+#### 粉液気scalarの休止証明と参照比較（2026-10-17）
+
+codex/e05-scalar-sleep ブランチでは単に最後のtickで交換数が0だったことでは休止を許さず、すべてのactive非空・非block素材が標準の質量条件・対角corner・両側移動・活動域のどれでも交換先を持たないことを確認する派生cacheを追加した。保存形式CHSLSCR1。復元cacheは未認証で、再びWorldで参照輸送を一度評価するまで高速化には使わない。別chunk・活動集合の変更や候補容量変更でwake、参照と同じrevisionを進める。
+
+- Windows/MSVC Rust 1.98.1、省メモリ対象テストmaterial_scalar_sleepは**3件成功、失敗0**。封じ込め粉液気の10tick参照比較、別chunk編集と通路解放によるwake、動く粉体の未睡眠、候補予算の失敗維持、保存cacheの復元時再評価を検査した。
+- cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings は成功。親PR #18は全OS CI10件成功。ただしこの追加ブランチのCI/レビューは提出後に別途検証し、E05/Q04全体を合格扱いにしない。
+
+#### Q04の全表現所有権連鎖とRuntimeのSource receipt・既定編集互換（2026-10-17）
+
+codex/e05-q04-cross-representation では既存PR #4〜#10と#14〜#20の個別実装を同一Worldの連続処理としてテストした。素材mass 5と3を比率1:3でcarrier mass 4に混合した場合、3carrierの純tokenはa=6/7、b=18/7。比率を純token比1/4,3/4と誤解した初回テストは失敗し、MixtureStoreの実質量換算を確認して期待値を修正した。通常scalar移動で追従するMixtureRef、正規粒子への所有権、archive退避、World保存復元、region復帰をすべて同じbaselineと独自body/reservoir Providerの実量で照合し、候補容量不足が全体rollbackになることも確認した。
+
+Runtimeは専用の監査付き入口でSourceの純増を理由付きreceiptとして保存し、公開後のWorld/Runtime時計と台帳を復元照合した。旧edit_terrainとWorldAccess::setを全台帳Worldで禁止する初回案は、独立レビューで設計書36の「raw編集は可能で、後続verifyで未記録増減を検出する」契約およびUI/debug状態の作者拡張性を壊すと指摘されたため撤回した。既定のraw地形編集は成功するが後続の全表現verifyが失敗すること、独立したu64作者recordは台帳と共存できることをテストする。監査を要求する作者Systemは明示して専用入口を使う。複数台帳を一つの申告で自動認証済みとは扱わない。
+
+- 低メモリWindows/MSVC Rust 1.98.1、単一ジョブ、debug情報無効・1024 codegen units・incremental無効：material_accounting **19件成功、失敗0**、material_runtime **7件成功、失敗0**。同一Materials barrierでraw変更→監査前照合失敗→Runtime tick全体のrollbackも検証。有理量の初期失敗は実装不具合ではなくテスト期待値の解釈違いであり、修正後に全件通過した。
+- 変更後の全ターゲットcheckと警告拒否Clippy、CI、コードレビューの再検証結果を別途追記する。Q04完全判定は多数Job・圧力連成・動的依存halo・Runtime複数barrier/worker・ストリーミング順まで必要。
+
+#### Q04横断テストの実質レビュー指摘への修正（2026-10-17）
+
+独立レビューで、当初の混合3carrierの期待token数は正しい一方、massの独立検算が欠落していたこと、候補容量不足の試験は先行する合法編集を行っておらず部分commitへの耐性証明が弱かったこと、World::restore後に派生archive cacheを再利用して外部groupの欠損を見逃す経路があったことを確認した。次の依存ブランチ codex/e05-q04-review-fixes では3件とも同じE05実体試験で補強した。
+
+- 混合massはa=30/7、b=54/7、合計12で検証。合法のMixtureRef付き輸送後に候補予算超過を発生させ、地形・channel・台帳のcheckpointが取引前と一致することを検証。粒子の速度変更を先に行った後の不正cell編集もarenaごとrollbackする。
+- World復元後、ArchiveStorageから派生cacheを作り直す。元archiveを消した場合は失敗し、復元して再読み込み後にbaselineを一致させる。region復帰後にも再集計し、退避時groupの二重計上を防止する。
+- 対象単独試験 q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_totals は省メモリWindows/MSVCで修正後に成功。全対象・CI・再レビューはPR提出後に確認する。E05全体/Q04完了の判定ではない。
+
+#### 複数material処理の一体化とRuntime Materials phase（2026-10-17）
+
+codex/e05-material-phase-pipeline では各WorldEdit標準処理を WorldEdit::step_material_phase へ合流させた。pressure、cell force+DDA、scalar、正規粒子force+DDAを明示した設定で順番に実行し、どの後段で容量・入力に失敗しても全体をrollbackする。作者MaterialForceProviderの置換は同じtraitを通じるが、隠れた標準重力・作者state変更を注入しない。既存個別APIの意味を変更しない。
+
+- Windows/MSVC省メモリ指定で tests/material_forces **25件成功（失敗0）**。統合APIと共通予約が不要な条件での個別solverの3tick報告・checkpoint完全一致、圧力の同tick参照結果、force更新後のscalar容量失敗、非simulated layerの拒否、セルから正規粒子位置への侵入防止を含む。
+- 独立コードレビューで指定layerとWorld全域canonical粒子処理のスコープ不整合を発見した。従来World全域の力学APIを維持し、粒子DDA・粒子力積分のlayer限定APIを追加して統合phaseから使用するよう修正。2layerを同tickに順次処理する回帰で、他layerの粒子への二重積分・位置変更が発生しないことを検証した。
+- 同じ設定の tests/material_runtime **10件成功（失敗0）**。監査付きのRuntime Materials Systemから統合Q16力学+scalarを3tick実行し、World/Runtime時計・収支・各tickのrestoreが一致した。さらに別SystemのSource→Sinkを同一Materials phaseで依存順に処理し、理由付き2 receiptを検証。後段の故意の失敗で前段のWorld・台帳・時計をすべてrollbackする。
+- さらに material_particles **30件**、material_motion **12件**、material_transport **25件**も同一省メモリ設定で成功、失敗0。全OS CIは本変更のpush後に再確認する。
+- 独立レビューで同tickのcell DDAとscalarが予約を共有せず、同じ砂を二度移動できる不具合を確認した。統合phase専用の共有CellReservationsを導入し、単独solverの既存挙動は維持した。角の横・縦検査点も先行DDAの予約に反した通過を許さない。World全域の正規粒子APIもsimulated=false layerを対象から除外し、非参加layerの所有物を保持する回帰を追加した。
+- 本実装の全11対象スイートは、単一ジョブの省メモリ設定で全件成功。E05最終マージ順は [PR_MERGE_PLAN.md](PR_MERGE_PLAN.md) の未確定台帳を参照し、Q04終了時に最後のPR本文へ確定して記載する。
+- フォーマット/Clippy・全OS CI・独立レビューは変更提出後に確認する。Q04の局所dirty/haloや広域Jobの同時予約・Provider永続化は未完了、E05全体の完成根拠にはしない。
+
+#### E05統合PRを増やさず修正を集約（2026-10-18）
+
+PR #22を新しいPRへ細分化せず、PR #10をbaseとするE05統合集約のDraftへ再構成した（commit cf8f178）。元PR #14〜#21のブランチとレビュー履歴は保存し、E05完成前に破壊的なCloseを行わない。Q04未達のため最終のマージ番号列は今は確定しない。Codexへの最終指示・除外元・merge後のゲートは [PR_MERGE_PLAN.md](PR_MERGE_PLAN.md) で管理する。
+
+追加の独立監査では、標準scalarの斜め移動で角の予約セルを空きと誤認し得る箇所、World全域粒子stepでnon-simulated layerを更新する余地、混合の全表現収支profileでMixtureRef channelの既定値NONEを検証していない箇所を確認した。セルの予約を角判定に追加し、non-simulated layerの粒子はWorld全域stepでも保持し、混合channelの初期値を必ずNONEと確認する。対象回帰ではnon-simulated layerの粒子不変、MixtureRef不正defaultでのarchive監査入口の拒否を検証した。
+
+- Windows/MSVC（1ジョブ、debug=0、codegen-units=1024、incremental無効）で material_accounting、material_forces、material_motion、material_transport、material_particles、material_runtime の6対象スイートを検査してすべて成功。混合defaultの追加単独回帰テストも成功した。全OSの更新後CIとQ04全工程出口は別途検証する。

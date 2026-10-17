@@ -1,0 +1,31 @@
+# E05：Q04の物質収支・所有権・Runtimeの横断受け入れ試験
+
+## 同一Worldでの連続検証
+
+既存の物質収支（36）、保存可能な広域DDA（38）、標準・独自物性（37）、力学とscalar sleep（39・41）、Runtime barrier（40）を別機能の成功証拠として保持しつつ、Q04では同じWorldの実データを連続して操作する試験を追加する。
+
+tests/material_accounting.rsのQ04横断例は、1:3の混合をcarrierへ登録し、純成分token数・純質量を約分済み有理数で集計する。混合成分の素材massはそれぞれ5と3、carrier massは4で、3tokenのcarrierは成分a=6/7、成分b=18/7の純token数を所有する。単純に1/4・3/4と読み替えると質量保存が壊れるため、純tokenと質量比を混同しない。
+
+この状態から同一台帳を維持して、通常scalar移動（全物質追従channelのMixtureRefを含む）→正規物質粒子への所有権移動→region退避→World checkpoint復元→region復帰を実行し、その都度Worldとarchiveの実量を再計算して初期baselineに一致させる。scalar候補容量0の失敗時には地形・台帳・正規粒子までWorld checkpointが不変でなければならない。body/reservoirの独自Provider所有分も同じ台帳に含める。
+
+### 独立レビューで強化した失敗経路
+
+混合成分の純token数a=6/7、b=18/7に加えて、実際の素材massもa=30/7、b=54/7、合計12で独立検算する。容量不足だけを単独で起こすのでなく、先にmaterial-followingなMixtureRefを含む正しい輸送を実行した後に候補容量を超え、初期checkpointの完全一致でロールバックを確認する。正規物質粒子への所有権移譲後にも速度を書き換えてから故意に未読込セルの編集を失敗させ、粒子arenaと台帳が元に戻ることを確認する。
+
+archive退避後のWorld checkpoint復元に際しては、保存前の派生archive cacheをそのまま使うだけでは失われた外部groupを発見できない。復元後に元のArchiveStorageから全groupのcacheを再構築し、欠損archiveを一度注入して読み込みを拒否すること、元のbyteを戻して再構築した後に収支を一致させることを確認する。region復帰後もresidentに属する物質へ二重計上しないよう、archive一覧を再構築して検証する。
+
+## Runtimeの監査境界
+
+Runtimeの既定WorldAccessは、MaterialBalanceLog登録済みのWorldでも通常のedit_terrainや任意のstate Putを提供する。これらは設計書36に従い**監査されない低水準編集**であり、後続のverify_material_accountingを呼ぶと記録のない物質増減を検出する。作者が監査を必須とするgameplay Systemでは、WorldAccess::edit_material_accountedを選んで同tickの原子的照合を行う。
+
+独立レビューでは台帳付きWorldから既定の全編集を一律に禁止する案が、全く関係のないUI・debug recordや独自Systemの状態更新まで禁止し、設計書36と公開API互換性を損なうと判明したため取り消した。台帳は複数登録可能であり、一つの監査付き取引は指定した台帳のscopeとProfileだけを保証する。他台帳を自動的に認証済みと宣言しない。
+
+tests/material_runtime.rsは正常な全量移動、無記録Sourceの失敗、正常な編集の後で握り潰した不正書込による全面rollback、既定の未監査地形編集での後続監査不一致、独立した作者状態Putの互換性、明示Source receiptとWorld保存復元、全例のRuntime clockと地形revisionの整合を検証する。また**同一Materials barrier**内で未監査地形編集を先に予約し、次の監査付き原子取引がpreflightで収支破壊を発見する場合は、先行の未監査編集も含めRuntime tick全体を不公開にする。
+
+### 時刻と外部副作用
+
+Materials barrierでのreceipt.tickはWorldの編集前に確定しているtick値であり、Runtime.step(1)の最中なら0。Runtimeは全phaseとbarrierの完了後にWorld tickを1へ更新する。receiptの値を公開後のtickと混同せず、記録の意味を明示する。archiveの実データは認証済みの派生入力として事前に取得し、IO失敗はbarrier前に検知する。試験fixtureの空archiveではSystem::run内で計算しているが、実ゲームでは同期IOによる作業順序・待ち時間を持ち込まない。
+
+## 未達と出口の維持
+
+この試験だけではQ04を通過しない。多数の同時移動、混合/圧力の同tick連成、広域DDA進行中のarchive切替、複数Provider・worker順とIO準備順、sleep依存stencilとhalo wake、Runtimeのpause・SameTick、容量とfault注入の相互作用は引き続き実装と試験を必要とする。E05全体を完成と主張する前にこれらの失敗系と独立レビューをそろえる。
