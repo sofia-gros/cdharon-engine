@@ -221,12 +221,7 @@ fn pr4_transport_moves_carriers_without_changing_inventory() {
         .unwrap();
     let initial = world.resident_material_inventory().unwrap();
     world
-        .edit(|editor| {
-            editor.transport_path(
-                front,
-                &[point(1, 1), point(2, 1), point(3, 1)],
-            )
-        })
+        .edit(|editor| editor.transport_path(front, &[point(1, 1), point(2, 1), point(3, 1)]))
         .unwrap();
     assert_eq!(world.resident_material_inventory().unwrap(), initial);
     assert!(matches!(
@@ -353,7 +348,9 @@ fn pr10_archive_is_explicitly_excluded_and_restored_without_loss() {
         .unwrap()
         .load(&mut archive)
         .unwrap();
-    restored.edit(|editor| editor.restore_region(loaded)).unwrap();
+    restored
+        .edit(|editor| editor.restore_region(loaded))
+        .unwrap();
     assert!(!restored.material_particle(handle).unwrap().is_archived());
     assert_eq!(restored.resident_material_inventory().unwrap(), initial);
 }
