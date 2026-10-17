@@ -882,6 +882,34 @@ impl WorldAccess<'_> {
         })();
         self.commands.remember(result)
     }
+    /// World全体を使う監査付き地形編集を、通常のMaterials barrierへ予約します。
+    ///
+    /// `edit_terrain` のWorldEdit入口だけでは、処理前後の全表現収支を照合する
+    /// `World::edit_material_accounted` やarchive一覧を受けるAPIを呼べません。
+    /// 作者はここで登録済みのProfileとarchive snapshotを保持するcallbackを
+    /// 提出できます。callbackはbarrierの一時World候補にだけ適用され、
+    /// 失敗したtickやpause中には公開されません。Runtimeのtickは変更不可です。
+    /// スケジューラのengine:terrain書込権限・World所属の検査も共通です。
+    pub fn edit_terrain_world(
+        &mut self,
+        world: WorldId,
+        callback: impl FnOnce(&mut crate::world::World) -> EngineResult<()> + 'static,
+    ) -> EngineResult<()> {
+        let result = (|| {
+            check_access(self.access, StableKey::parse("engine:terrain")?, true)?;
+            if self.worlds.get(world)?.terrain.is_none() {
+                return Err(error(
+                    ErrorCode::UnsupportedCapability,
+                    "sandbox地形を持たないWorld",
+                ));
+            }
+            self.commands.push(Command::Terrain {
+                world,
+                callback: Box::new(callback),
+            })
+        })();
+        self.commands.remember(result)
+    }
     /// Worldの更新を止めます。Sceneのpauseとは独立です。
     pub fn pause(&mut self, world: WorldId, paused: bool) -> EngineResult<()> {
         let result = (|| {

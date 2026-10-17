@@ -400,8 +400,8 @@ CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs
 | resident/inactive cell・粒子・body local cell・archive・reservoirの素材別token/mass収支 | PR #14で全表現の実量・理由付き台帳を実装。対象18テストと全OS CI10件成功。全Q04の連携監査は未完了 |
 | 重力・抗力・浮力・摩擦と標準／独自provider統合 | PR #15・#16でcellと正規粒子へ追加。対象7テスト成功、両PRのCI各10件成功。Runtimeの作者provider運用・schedule統合は未完了 |
 | 広域移動の保存可能な継続Job | 単一tokenの保存可能なMaterialMotionJobを追加、5件対象テスト成功。多数の同時Job・全Q04は未完了 |
-| dirty/sleep・wake依存とscalar参照のtick比較 | 未完了 |
-| 公開APIとRuntimeのQ04統合・CI証拠 | 未完了。対象テストや作例のみでQ04通過としない |
+| dirty/sleep・wake依存とscalar参照のtick比較 | 標準force+DDAの静止Sleep/Wakeを追加。逐tick checkpoint一致の対象試験成功。chunk単位の依存距離/粉液気scalar/圧力/粒子/作者ruleでは未完了 |
+| 公開APIとRuntimeのQ04統合・CI証拠 | Materials barrierからWorld全体の監査付き編集が可能。Runtime対象2試験成功。多System/worker/streamingと全Q04の統合は未完了 |
 
 E05全体の出口を下げず、各単位のレビュー・CIを確認しながら残りを実装する。すべて完了してから積み上げPRを依存順に統合し、その後E06の熱・反応工程へ続行する。
 
@@ -411,3 +411,12 @@ codex/e05-wide-motion-job では保存可能な MaterialMotionJob を実装し�
 
 - 省メモリ対象テスト material_motion_job：Windows/MSVC Rust 1.98.1、CARGO_BUILD_JOBS=1・CARGO_PROFILE_TEST_DEBUG=0・CARGO_PROFILE_TEST_CODEGEN_UNITS=1024・CARGO_INCREMENTAL=0で **5件成功、失敗0**。途中StateStore保存、multi-chunk、斜め角の障害、codecの改変、revision失効、移動後payloadと参照DDA一致を検証した。
 - cargo fmt --all -- --check、cargo check --all-targets --locked -j 1、cargo clippy --all-targets --locked -j 1 -- -D warnings も成功。全OS CIとレビュー結果は別途確認して追記する。単一Jobだけで一般の広域移動・dirty/sleepやRuntime Q04の出口を満たしたと判定しない。
+
+#### 標準force+DDAの保守的Sleep/WakeとRuntime収支統合（2026-10-17）
+
+ブランチ codex/e05-sleep-wake-reference。作者Providerや圧力・正規粒子へ省略の誤用がないよう、全active素材の停止証明がある標準のforce+DDAだけを対象とする MaterialSleepTracker を追加した。chunk revision、World/Content、設定とremap epochを照合して失効時は参照経路へ戻る。decode後のcacheは未検証として信頼せず再計算し、重力側未読込でforceにwaitingがある場合は省略しない。正規Worldが変更されなくても空のWorld取引で参照側と同じrevisionを進める。
+
+Runtimeは従来のWorldEdit callbackに加えWorld全体の編集callbackをMaterials barrierで扱う入口を追加した。作者が World::edit_material_accounted のProfileとarchive snapshotを移譲し、理由のない物質発行があれば同tick候補の地形・台帳・時計を全てrollbackする。従来のWorldAccessと同じアクセス宣言とtick制約を適用する。
+
+- Windows/MSVC Rust 1.98.1。CARGO_BUILD_JOBS=1、CARGO_PROFILE_TEST_DEBUG=0、CARGO_PROFILE_TEST_CODEGEN_UNITS=1024、CARGO_INCREMENTAL=0を適用した対象テスト：material_forces **11件成功（失敗0）**、material_runtime **2件成功（失敗0）**。未読込隣接でwaitingを失わない検査、World毎tickのcheckpoint一致、cache保存復元時の参照fallback、source未記録でのRuntime tick rollbackを含む。
+- 全OS CI・全体品質チェック・コードレビューはPR提出後に結果を追記する。Q04全体の合格証明ではない。

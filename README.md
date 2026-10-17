@@ -49,6 +49,8 @@ E05の次の開発単位として、[全表現の物質収支と監査付き保�
 
 [保存可能な広域DDA Job](new_docs/38_MATERIAL_MOTION_JOB.md)も実装中です。単一の非block物質tokenを1交差ずつ検査し、途中のStateStore保存・World復元で進捗を保持したまま、Ready後に既存の全payload輸送を一つの取引で確定します。専用の5件の対象テストで、複数chunk・通常DDAとの一致、斜め角抜け防止、途中保存、古い入力や不正codecの拒否を確認しました。複数Jobの同時競合処理や標準Runtimeの統合、dirty/sleepの省略最適化は引き続き未実装であり、E05/Q04は未達です。
 
+[標準力学の静止Sleep・Wake](new_docs/39_MATERIAL_SLEEP.md)は、全active chunkの速度・端数と物性を確認した恒等証明を、World/Content/epoch/各chunk revisionへ結びつけてキャッシュします。通常力学と省略力学を各tickで比較する検証を追加し、外部編集、素材追加、設定変更、未読込隣接域、キャッシュ復元時には必ず再計算します。独自Providerや正規粒子・圧力を安易にsleepさせず、chunk単位のdirty/halo wakeは引き続きE05の課題です。[RuntimeのMaterials barrier監査入口](new_docs/40_MATERIAL_RUNTIME.md)も追加し、全表現収支の監査を同tick候補内で行い、未記録の素材増加による取引失敗をRuntime tick全体でrollbackします。対象の力学/Sleep 11テストとRuntime 2テストは省メモリMSVC設定で成功。E05全体とQ04はまだ未完了です。
+
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
 
 ## 動かす
