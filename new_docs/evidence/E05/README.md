@@ -387,6 +387,13 @@ CIは[Rust品質検査](https://github.com/sofia-gros/charon-engine/actions/runs
 
 対象 `tests/material_forces.rs`：Windows/MSVCで低メモリ設定（`CARGO_BUILD_JOBS=1`、`CARGO_PROFILE_TEST_DEBUG=0`、`CARGO_PROFILE_TEST_CODEGEN_UNITS=1024`、`CARGO_INCREMENTAL=0`、`--jobs 1`）により**5件成功、失敗0件**。初回はWorldの成功取引でrevisionが進むことをテストが無視したため1件失敗し、その後に修正・再実行して全件通過した。作例 `cargo run --locked --example material_forces` も同様の低メモリdev設定で成功（2tickの連続実行と保存再開が一致）。providerの全候補を同じ候補Worldの読取り状態から評価し、その後まとめて速度channelを書き込むよう修正して候補順依存を抑えた。E05工程全体のQAとは区別する。
 
+#### 正規粒子へ標準・独自力学Providerを接続（2026-10-17）
+
+`codex/e05-particle-forces` では前記力学Providerを正規粒子の連続Q16座標へも接続した。速度更新と既存整数DDA/着地を同じ候補へまとめる公開APIを追加し、active粒子だけを世代付きhandleで評価する。providerが粒子では保存不能な端数を返す場合や速度上限・DDA上限を超える場合は全体rollback。参照する粒子の作者payloadは既存のWorld APIで読める。候補は全件評価後に一括書戻し、先行粒子の速度更新へ依存しない。
+
+- 省メモリ単独テスト `cargo test --locked --test material_forces --jobs 1`：**7件成功、失敗0件**。新たに2件の粒子積分/復帰・容量/端数失敗を追加した。
+- Clippy・全ターゲットのチェック・全OS CI・レビューは変更後の成否を確認して追加記録する。この結果はE05/Q04の完成判定ではない。
+
 | 必須項目 | 現在の判定 |
 | --- | --- |
 | 正規粒子・全payload所有権・DDA・容量失敗・所属region退避 | 本単位で実装・対象検証。5cfb0cfの実レビュー・CI10件を確認済み |

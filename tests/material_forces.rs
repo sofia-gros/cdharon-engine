@@ -332,3 +332,105 @@ fn motion_properties_are_validated_and_affect_content_identity() {
     };
     assert_ne!(default.fingerprint(), customized.fingerprint());
 }
+
+fn particle_config(cap: i64) -> MaterialParticleForceConfig {
+    MaterialParticleForceConfig {
+        gravity_q16: [0, 32768],
+        candidate_limit: 4,
+        max_velocity_q16: cap,
+    }
+}
+
+#[test]
+fn material_particle_forces_keep_q16_position_and_survive_checkpoint_resume() {
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    let handle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(8, 8), [0, 0]))
+        .unwrap();
+    let first = world
+        .edit(|edit| {
+            edit.step_material_particle_forces(
+                particle_config(1_000_000),
+                &StandardMaterialForces,
+                100,
+            )
+        })
+        .unwrap();
+    assert_eq!(first.force.changed, 1);
+    assert_eq!(first.particles.processed, 1);
+    assert_eq!(
+        world.material_particle(handle).unwrap().velocity_q16(),
+        [0, 32768]
+    );
+    let checkpoint = world.checkpoint(4_000_000).unwrap();
+    let mut resumed = World::restore(
+        &checkpoint,
+        Arc::clone(world.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    world
+        .edit(|edit| {
+            edit.step_material_particle_forces(
+                particle_config(1_000_000),
+                &StandardMaterialForces,
+                100,
+            )
+        })
+        .unwrap();
+    resumed
+        .edit(|edit| {
+            edit.step_material_particle_forces(
+                particle_config(1_000_000),
+                &StandardMaterialForces,
+                100,
+            )
+        })
+        .unwrap();
+    assert!(world.checkpoint(4_000_000).unwrap() == resumed.checkpoint(4_000_000).unwrap());
+    assert_eq!(world.material_particle(handle).unwrap().cell(), p(8, 9));
+}
+
+#[test]
+fn particle_force_failure_rolls_back_velocity_and_material_ownership() {
+    struct RejectRemainder;
+    impl MaterialForceProvider for RejectRemainder {
+        fn key(&self) -> StableKey {
+            key("test:bad-particle-remainder")
+        }
+        fn version(&self) -> u32 {
+            1
+        }
+        fn integrate(&self, mut input: MaterialForceInput<'_>) -> EngineResult<MaterialMotion> {
+            assert!(input.particle.is_some());
+            input.motion.remainder_q16 = [1, 0];
+            Ok(input.motion)
+        }
+    }
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    let handle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(8, 8), [0, 0]))
+        .unwrap();
+    let before = world.checkpoint(4_000_000).unwrap();
+    assert!(
+        world
+            .edit(|edit| edit
+                .integrate_material_particle_forces(particle_config(100), &StandardMaterialForces))
+            .is_err()
+    );
+    assert!(world.checkpoint(4_000_000).unwrap() == before);
+    assert!(
+        world
+            .edit(|edit| edit
+                .integrate_material_particle_forces(particle_config(1_000_000), &RejectRemainder))
+            .is_err()
+    );
+    assert!(world.checkpoint(4_000_000).unwrap() == before);
+    assert_eq!(
+        world.material_particle(handle).unwrap().velocity_q16(),
+        [0, 0]
+    );
+}

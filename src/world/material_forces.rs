@@ -4,8 +4,9 @@
 //! 読取専用状態を参照して独自式へ完全置換でき、標準式を暗黙に二重適用しません。
 
 use super::{
-    CellQuery, ChannelQuery, LayerId, MaterialBase, MaterialDef, MaterialMotion,
-    MaterialMotionConfig, MaterialMotionReport, World, WorldEdit, invalid,
+    CellQuery, ChannelQuery, ChunkCoord, LayerId, MaterialBase, MaterialDef, MaterialMotion,
+    MaterialMotionConfig, MaterialMotionReport, MaterialParticleHandle, MaterialParticleReport,
+    World, WorldEdit, invalid,
 };
 use crate::foundation::{
     EngineError, EngineResult, StableKey,
@@ -30,6 +31,9 @@ pub struct MaterialForceNeighbor {
 pub struct MaterialForceInput<'a> {
     /// 候補開始時点の読み取り専用World。
     pub world: &'a World,
+    /// セルの場合はNone、正規粒子ならWorld所属の世代付きhandle。
+    /// callbackは対応する作者payloadをWorldから型付きで参照できます。
+    pub particle: Option<MaterialParticleHandle>,
     /// Worldの対象layer。
     pub layer: LayerId,
     /// 候補のcell位置。
@@ -141,6 +145,37 @@ pub struct MaterialForceMotionReport {
     pub motion: MaterialMotionReport,
 }
 
+/// 正規物質粒子用の標準・独自の速度積分設定。
+#[derive(Clone, Copy, Debug)]
+pub struct MaterialParticleForceConfig {
+    /// Q16 cell/tick²の重力ベクトル。
+    pub gravity_q16: [i64; 2],
+    /// このphaseで積分する最大活動粒子数。超過したら丸ごと失敗させます。
+    pub candidate_limit: usize,
+    /// Q16速度の許容絶対値。飽和させずrollbackします。
+    pub max_velocity_q16: i64,
+}
+
+/// 正規物質粒子への力積分に関する処理結果。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterialParticleForceReport {
+    /// activeなresident粒子候補数。
+    pub candidates: usize,
+    /// 必須の隣接regionが未読込で更新を延期した粒子数。
+    pub waiting_for_region: usize,
+    /// 速度更新数。
+    pub changed: usize,
+}
+
+/// 正規粒子の力積分と整数DDAを一つの候補で実行した結果。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MaterialParticleForceStepReport {
+    /// 力の更新。
+    pub force: MaterialParticleForceReport,
+    /// 整数DDA・予約・着地の結果。
+    pub particles: MaterialParticleReport,
+}
+
 impl WorldEdit<'_> {
     /// 明示されたproviderだけを、活動素材の速度channelへ適用します。
     ///
@@ -245,6 +280,7 @@ impl WorldEdit<'_> {
                 };
                 let updated = provider.integrate(MaterialForceInput {
                     world: editor.world,
+                    particle: None,
                     layer,
                     point,
                     material,
@@ -299,6 +335,159 @@ impl WorldEdit<'_> {
             let force = editor.integrate_material_forces(layer, force, provider)?;
             let motion = editor.transport_material_motion(layer, motion)?;
             Ok(MaterialForceMotionReport { force, motion })
+        })
+    }
+
+    /// 活動regionの正規物質粒子へ、標準または独自Providerの力を一度だけ適用します。
+    ///
+    /// 粒子の位置は既にQ16で保持するため、セル輸送用の端数channelは使いません。
+    /// 戻り値の端数が非0のProviderは未保存値の消失を避けるため拒否します。
+    /// 候補をすべて同じWorld状態で評価してから世代付きhandleへ書き戻すので、
+    /// callbackは先行粒子の新速度を読みません。未読込隣接域は延期します。
+    pub fn integrate_material_particle_forces(
+        &mut self,
+        config: MaterialParticleForceConfig,
+        provider: &dyn MaterialForceProvider,
+    ) -> EngineResult<MaterialParticleForceReport> {
+        self.run(|editor| {
+            if config.max_velocity_q16 <= 0 || provider.version() == 0 {
+                return Err(invalid("正規粒子の物性速度上限・provider版"));
+            }
+            let mut handles = Vec::new();
+            for (handle, particle) in editor.world.material_particles() {
+                if particle.is_archived() {
+                    continue;
+                }
+                if !editor
+                    .world
+                    .chunks
+                    .get(&ChunkCoord::at(particle.cell()))
+                    .is_some_and(|chunk| chunk.active)
+                {
+                    continue;
+                }
+                if handles.len() >= config.candidate_limit {
+                    return Err(EngineError::capacity(
+                        "活動正規粒子の力積分件数",
+                        handles.len() as u64 + 1,
+                        config.candidate_limit as u64,
+                    ));
+                }
+                handles.try_reserve(1).map_err(allocation)?;
+                handles.push(handle);
+            }
+            let mut report = MaterialParticleForceReport {
+                candidates: handles.len(),
+                ..Default::default()
+            };
+            let mut updates = Vec::new();
+            updates
+                .try_reserve_exact(handles.len())
+                .map_err(allocation)?;
+            for handle in handles {
+                let particle = editor.world.material_particle(handle)?;
+                let point = particle.cell();
+                let layer = particle.layer();
+                let material = editor
+                    .world
+                    .content
+                    .material(particle.core().material)?
+                    .ok_or_else(|| invalid("正規粒子の空素材"))?;
+                let gravity_axis = usize::from(
+                    config.gravity_q16[1].unsigned_abs() >= config.gravity_q16[0].unsigned_abs(),
+                );
+                let sign = config.gravity_q16[gravity_axis].signum() as i32;
+                let adjacent = if config.gravity_q16 == [0, 0] {
+                    None
+                } else if gravity_axis == 0 {
+                    point
+                        .x
+                        .checked_add(sign)
+                        .map(|x| CellPoint { x, y: point.y })
+                } else {
+                    point
+                        .y
+                        .checked_add(sign)
+                        .map(|y| CellPoint { x: point.x, y })
+                };
+                let neighbor = match adjacent {
+                    None => None,
+                    Some(location) => match editor.world.cell(layer, location)? {
+                        CellQuery::WorldBoundary => None,
+                        CellQuery::Loaded(value) => editor
+                            .world
+                            .content
+                            .material(value.core.material)?
+                            .map(|definition| MaterialForceNeighbor {
+                                base: definition.base(),
+                                mass_per_cell: definition.mass_per_cell(),
+                                block: value.block.is_some(),
+                            }),
+                        _ => {
+                            report.waiting_for_region += 1;
+                            continue;
+                        }
+                    },
+                };
+                let previous = particle.velocity_q16();
+                let updated = provider.integrate(MaterialForceInput {
+                    world: editor.world,
+                    particle: Some(handle),
+                    layer,
+                    point,
+                    material,
+                    motion: MaterialMotion {
+                        velocity_q16: previous,
+                        remainder_q16: [0, 0],
+                    },
+                    gravity_q16: config.gravity_q16,
+                    neighbor,
+                })?;
+                updated.validate()?;
+                if updated.remainder_q16 != [0, 0] {
+                    return Err(invalid("正規粒子は別の未保存端数を持たない"));
+                }
+                if updated
+                    .velocity_q16
+                    .iter()
+                    .any(|speed| speed.unsigned_abs() > config.max_velocity_q16 as u64)
+                {
+                    return Err(EngineError::capacity(
+                        "正規粒子の物性速度上限",
+                        updated
+                            .velocity_q16
+                            .iter()
+                            .map(|v| v.unsigned_abs())
+                            .max()
+                            .unwrap_or(0),
+                        config.max_velocity_q16 as u64,
+                    ));
+                }
+                if updated.velocity_q16 != previous {
+                    updates.push((handle, updated.velocity_q16));
+                    report.changed += 1;
+                }
+            }
+            for (handle, velocity) in updates {
+                editor.set_particle_velocity(handle, velocity)?;
+            }
+            Ok(report)
+        })
+    }
+
+    /// 正規粒子の力積分・整数DDA・予約・着地を一つのWorld候補で公開します。
+    /// providerの失敗や粒子DDA容量不足では、速度更新も含めてrollbackします。
+    pub fn step_material_particle_forces(
+        &mut self,
+        config: MaterialParticleForceConfig,
+        provider: &dyn MaterialForceProvider,
+        dda_step_limit: usize,
+    ) -> EngineResult<MaterialParticleForceStepReport> {
+        self.run(|editor| {
+            let force = editor.integrate_material_particle_forces(config, provider)?;
+            let particles =
+                editor.step_material_particles(config.candidate_limit, dda_step_limit)?;
+            Ok(MaterialParticleForceStepReport { force, particles })
         })
     }
 }

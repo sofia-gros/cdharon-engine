@@ -17,8 +17,17 @@
 
 `WorldEdit::step_material_force_motion` は力積分と既存 `transport_material_motion` のDDA・予約・全物質channel追従を単一World候補で行う。失敗時は力だけ先に適用済みになることがなく、1tickに二重積分を発生させない。正規粒子向けの力積分・広域保存可能Job・dirty/sleep・Runtimeの自動Scheduleは**別途E05残作業**であり、この実装単位でQ04を合格にしない。
 
+## 正規粒子の力積分
+
+`WorldEdit::integrate_material_particle_forces` はactiveなresident正規粒子だけを世代付きhandleで列挙し、同じ `MaterialForceProvider` を一候補につき一度だけ実行する。退避中またはinactiveな粒子は速度を書き換えない。粒子の位置はQ16連続座標なので、セル速度channelの`remainder_q16`は粒子の実状態ではない。providerが非0の端数を返した場合は隠れた変位を失わないよう全候補をエラーにする。作者は`MaterialForceInput::particle`から対象handleと完全な粒子payloadを読み取れる。
+
+`WorldEdit::step_material_particle_forces` は、全粒子の力積分後に既存 `step_material_particles` の整数DDA、衝突予約・着地を同じWorld編集候補で確定する。速度・位置・物質所有は既存のcheckpoint/restoreに従い、力またはDDAの容量不足では全体を巻き戻す。セル版と同じくproviderは未変更Worldを共通の参照状態として観測し、先行粒子の新速度に依存しない。
+
+このAPIも毎tick自動で実行されるRuntime標準Systemや広域Jobを代替しない。単一tickの一括候補上限を残していること、作者のschedule profile・provider key/versionを保存・一致検査することはE05全体の未達として記録する。
+
 ## 検証
 
 - `tests/material_forces.rs` は標準重力/抗力/摩擦/浮力、独自providerによる置換、容量rollback、DDAと保存再開の一致、Contentの物性値域とfingerprint差異を検査する。
+- 同ファイルの粒子回帰では途中checkpointを挟む連続Q16位置と正規粒子の力積分の一致、端数不正・速度容量による全体rollbackを確認する。
 - `examples/material_forces.rs` は重力0.5 cell/tick²の2tickを途中でWorld保存し、連続実行と再開のcheckpoint一致と移動先cellを確認する。
 - `cargo test --locked --test material_forces` と `cargo run --locked --example material_forces` を対象検証する。全体・全OS CIはE05 evidenceへ記録する。
