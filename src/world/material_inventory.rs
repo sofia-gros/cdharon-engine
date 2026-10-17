@@ -13,13 +13,13 @@ use crate::foundation::{EngineResult, StableKey, error::allocation};
 pub struct ResidentMaterialAmount {
     /// Contentで確定した素材の安定キー。
     pub material: StableKey,
-    /// 全layerのresident cell内にあるtoken数。block個体の占有cellも含みます。
+    /// 全layerのresident cell内にあるcarrier token数。block個体の占有cellも含みます。
     pub cell_tokens: u64,
     /// resident正規粒子が所有するtoken数。1粒子につき1tokenです。
     pub particle_tokens: u64,
     /// cell_tokensとparticle_tokensの合計。
     pub total_tokens: u64,
-    /// total_tokensとContentのmass_per_cellの積。
+    /// total_tokensとContentのmass_per_cellの積による名目mass。混合成分の実質量ではありません。
     pub mass: u128,
 }
 
@@ -41,6 +41,7 @@ impl World {
     /// 値や混合組成を追加の物質tokenとして数えません。退避chunk・退避粒子は
     /// 外部archiveの読込が必要なため、件数のみを結果へ残します。
     ///
+    /// 混合cellはcarrier素材として計上し、成分別の分数数量は含みません。
     /// 診断目的の全resident cell走査です。tickごとのhot pathでは利用せず、
     /// World全体の収支確定にはarchiveと将来のbody/reservoirを合わせてください。
     pub fn resident_material_inventory(&self) -> EngineResult<ResidentMaterialInventory> {
@@ -98,8 +99,7 @@ fn increase(
     if material == MaterialId::AIR {
         return Ok(());
     }
-    let index = usize::try_from(material.index() - 1)
-        .map_err(|_| invalid("素材IDが範囲外"))?;
+    let index = usize::try_from(material.index() - 1).map_err(|_| invalid("素材IDが範囲外"))?;
     let amount = materials
         .get_mut(index)
         .ok_or_else(|| invalid("集計対象の素材IDが不正"))?;
