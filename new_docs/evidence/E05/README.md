@@ -446,3 +446,11 @@ Runtimeは専用の監査付き入口でSourceの純増を理由付きreceiptと
 
 - 低メモリWindows/MSVC Rust 1.98.1、単一ジョブ、debug情報無効・1024 codegen units・incremental無効：material_accounting **19件成功、失敗0**、material_runtime **7件成功、失敗0**。同一Materials barrierでraw変更→監査前照合失敗→Runtime tick全体のrollbackも検証。有理量の初期失敗は実装不具合ではなくテスト期待値の解釈違いであり、修正後に全件通過した。
 - 変更後の全ターゲットcheckと警告拒否Clippy、CI、コードレビューの再検証結果を別途追記する。Q04完全判定は多数Job・圧力連成・動的依存halo・Runtime複数barrier/worker・ストリーミング順まで必要。
+
+#### Q04横断テストの実質レビュー指摘への修正（2026-10-17）
+
+独立レビューで、当初の混合3carrierの期待token数は正しい一方、massの独立検算が欠落していたこと、候補容量不足の試験は先行する合法編集を行っておらず部分commitへの耐性証明が弱かったこと、World::restore後に派生archive cacheを再利用して外部groupの欠損を見逃す経路があったことを確認した。次の依存ブランチ codex/e05-q04-review-fixes では3件とも同じE05実体試験で補強した。
+
+- 混合massはa=30/7、b=54/7、合計12で検証。合法のMixtureRef付き輸送後に候補予算超過を発生させ、地形・channel・台帳のcheckpointが取引前と一致することを検証。粒子の速度変更を先に行った後の不正cell編集もarenaごとrollbackする。
+- World復元後、ArchiveStorageから派生cacheを作り直す。元archiveを消した場合は失敗し、復元して再読み込み後にbaselineを一致させる。region復帰後にも再集計し、退避時groupの二重計上を防止する。
+- 対象単独試験 q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_totals は省メモリWindows/MSVCで修正後に成功。全対象・CI・再レビューはPR提出後に確認する。E05全体/Q04完了の判定ではない。

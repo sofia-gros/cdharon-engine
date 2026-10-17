@@ -1623,6 +1623,16 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         MaterialQuantity::new(18, 7).unwrap()
     );
     assert_eq!(total(&baseline, "test:carrier"), MaterialQuantity::ZERO);
+    let mass_of = |name: &str| {
+        baseline
+            .quantities()
+            .iter()
+            .find(|value| value.material == key(name))
+            .unwrap()
+            .mass
+    };
+    assert_eq!(mass_of("test:a"), MaterialQuantity::new(30, 7).unwrap());
+    assert_eq!(mass_of("test:b"), MaterialQuantity::new(54, 7).unwrap());
 
     let lease = world
         .edit(|edit| {
@@ -1643,7 +1653,12 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
                 key("test:balance"),
                 key("test:balance-schema"),
                 None,
-                |edit| edit.transport_materials(layer, 0).map(|_| ()),
+                |edit| {
+                    // 実際にMixtureRefを追従させる合法な移動が先行しても、
+                    // 後続の容量不足でcell/channel/台帳が丸ごと戻る。
+                    edit.transport_path(layer, &[point(10, 11), point(10, 10)])?;
+                    edit.transport_materials(layer, 0).map(|_| ())
+                },
             )
             .is_err()
     );
@@ -1688,6 +1703,24 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         world.material_particle(particle).unwrap().cell(),
         point(10, 11)
     );
+    let before_particle_failure = save(&world);
+    assert!(
+        world
+            .edit_material_accounted(
+                &profile,
+                &cache,
+                key("test:balance"),
+                key("test:balance-schema"),
+                None,
+                |edit| {
+                    edit.set_particle_velocity(particle, [65536, 0])?;
+                    // 粒子更新が済んだ後にresident外の編集を失敗させる。
+                    edit.set_cell(layer, point(4096, 4096), carrier)
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(save(&world), before_particle_failure);
     baseline
         .verify_conserved(
             &world
@@ -1717,10 +1750,26 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         )
         .unwrap();
     world = restore(&world);
+    // checkpoint後の派生archive cacheは正規状態ではなく、
+    // 元storageを再検証してWorld/Content/hashとの整合を取り直す。
+    let archive_hash = *storage.values.keys().next().unwrap();
+    let archive_bytes = storage.values.remove(&archive_hash).unwrap();
+    assert!(
+        world
+            .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+            .is_err(),
+        "Worldのcheckpointが正常でも、欠落した外部archiveをcache扱いしない"
+    );
+    storage.values.insert(archive_hash, archive_bytes);
+    let reads_before = storage.reads;
+    let restored_cache = world
+        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+        .unwrap();
+    assert!(storage.reads > reads_before);
     baseline
         .verify_conserved(
             &world
-                .verify_material_accounting(&profile, &archive_cache, key("test:balance"))
+                .verify_material_accounting(&profile, &restored_cache, key("test:balance"))
                 .unwrap(),
         )
         .unwrap();
@@ -1730,10 +1779,13 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         .load(&mut storage)
         .unwrap();
     world.edit(|edit| edit.restore_region(loaded)).unwrap();
+    let resident_cache = world
+        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+        .unwrap();
     baseline
         .verify_conserved(
             &world
-                .verify_material_accounting(&profile, &archive_cache, key("test:balance"))
+                .verify_material_accounting(&profile, &resident_cache, key("test:balance"))
                 .unwrap(),
         )
         .unwrap();
