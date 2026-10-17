@@ -1561,3 +1561,180 @@ fn generation_save_and_load_verify_all_material_before_publishing_a_world() {
         .is_err()
     );
 }
+
+#[test]
+fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_totals() {
+    // 専用対象試験を互いに並べるだけでなく、同一Worldと同一収支台帳で
+    // scalar輸送→正規粒子所有権へ変換→region退避→World保存復元→復帰を照合。
+    let (mut world, layer, profile, mut storage) = fixture(1_000_000);
+    let carrier = cell(&world, "test:carrier");
+    let components = MixtureState::new(&[
+        MixturePart {
+            material: key("test:a"),
+            ratio: 1,
+        },
+        MixturePart {
+            material: key("test:b"),
+            ratio: 3,
+        },
+    ])
+    .unwrap();
+    let store = MixtureStore::new(
+        &world,
+        MixtureLimits {
+            entries: 8,
+            components: 8,
+            receipts: 8,
+        },
+    )
+    .unwrap();
+    let reference = world
+        .edit(|edit| {
+            edit.set_state(MixtureStore::key(), key("test:mixtures"), &store)?;
+            let mixture = edit.register_mixture(key("test:mixtures"), &components)?;
+            edit.set_cell(layer, point(10, 10), carrier)?;
+            edit.set_channel(key("test:mixture"), point(10, 10), mixture)?;
+            edit.set_state(
+                key("test:body"),
+                key("test:owned"),
+                &owned(layer, "test:carrier", mixture, 1),
+            )?;
+            edit.set_state(
+                key("test:reservoir"),
+                key("test:owned"),
+                &owned(layer, "test:carrier", mixture, 1),
+            )?;
+            Ok(mixture)
+        })
+        .unwrap();
+    let cache = world
+        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+        .unwrap();
+    init(&mut world, &profile, &cache, 16);
+    let baseline = world
+        .verify_material_accounting(&profile, &cache, key("test:balance"))
+        .unwrap();
+    assert_eq!(
+        total(&baseline, "test:a"),
+        MaterialQuantity::new(6, 7).unwrap()
+    );
+    assert_eq!(
+        total(&baseline, "test:b"),
+        MaterialQuantity::new(18, 7).unwrap()
+    );
+    assert_eq!(total(&baseline, "test:carrier"), MaterialQuantity::ZERO);
+
+    let lease = world
+        .edit(|edit| {
+            edit.acquire_lease(RegionLease {
+                source: key("test:q04-active"),
+                region: ChunkRegion::single(ChunkCoord::new(0, 0)?)?,
+                mode: LeaseMode::Simulate,
+                expires: None,
+            })
+        })
+        .unwrap();
+    let before = save(&world);
+    assert!(
+        world
+            .edit_material_accounted(
+                &profile,
+                &cache,
+                key("test:balance"),
+                key("test:balance-schema"),
+                None,
+                |edit| edit.transport_materials(layer, 0).map(|_| ()),
+            )
+            .is_err()
+    );
+    assert_eq!(
+        save(&world),
+        before,
+        "容量不足で取引前の混合・台帳まで巻き戻す"
+    );
+    let report = world
+        .edit_material_accounted(
+            &profile,
+            &cache,
+            key("test:balance"),
+            key("test:balance-schema"),
+            None,
+            |edit| edit.transport_materials(layer, 16),
+        )
+        .unwrap();
+    assert_eq!(report.exchanges, 1);
+    assert!(matches!(
+        world.channel_value::<MixtureRef>(key("test:mixture"), point(10, 11)).unwrap(),
+        ChannelQuery::Loaded(value) if value == reference
+    ));
+    baseline
+        .verify_conserved(
+            &world
+                .verify_material_accounting(&profile, &cache, key("test:balance"))
+                .unwrap(),
+        )
+        .unwrap();
+    let particle = world
+        .edit_material_accounted(
+            &profile,
+            &cache,
+            key("test:balance"),
+            key("test:balance-schema"),
+            None,
+            |edit| edit.emit_material_particle(layer, point(10, 11), [0, 0]),
+        )
+        .unwrap();
+    assert_eq!(
+        world.material_particle(particle).unwrap().cell(),
+        point(10, 11)
+    );
+    baseline
+        .verify_conserved(
+            &world
+                .verify_material_accounting(&profile, &cache, key("test:balance"))
+                .unwrap(),
+        )
+        .unwrap();
+
+    world.edit(|edit| edit.release_lease(lease)).unwrap();
+    let archive = world
+        .prepare_eviction(
+            ChunkRegion::single(ChunkCoord::new(0, 0).unwrap()).unwrap(),
+            8_000_000,
+        )
+        .unwrap()
+        .store(&mut storage)
+        .unwrap();
+    world.edit(|edit| edit.finish_eviction(archive)).unwrap();
+    let archive_cache = world
+        .load_material_archive_inventory(&profile, &mut storage, 8_000_000)
+        .unwrap();
+    baseline
+        .verify_conserved(
+            &world
+                .verify_material_accounting(&profile, &archive_cache, key("test:balance"))
+                .unwrap(),
+        )
+        .unwrap();
+    world = restore(&world);
+    baseline
+        .verify_conserved(
+            &world
+                .verify_material_accounting(&profile, &archive_cache, key("test:balance"))
+                .unwrap(),
+        )
+        .unwrap();
+    let loaded = world
+        .region_load_task(ChunkCoord::new(0, 0).unwrap(), 8_000_000)
+        .unwrap()
+        .load(&mut storage)
+        .unwrap();
+    world.edit(|edit| edit.restore_region(loaded)).unwrap();
+    baseline
+        .verify_conserved(
+            &world
+                .verify_material_accounting(&profile, &archive_cache, key("test:balance"))
+                .unwrap(),
+        )
+        .unwrap();
+}
