@@ -1790,3 +1790,84 @@ fn q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_total
         )
         .unwrap();
 }
+
+#[test]
+fn accounting_rejects_material_mixture_channel_with_non_none_default() {
+    // 独立旧PR #12の検証を保持する。World全域監査へ渡す混合参照
+    // channelの既定値がNONE以外なら、未確保cellを純物質と解釈できない。
+    let mut encoded = Encoder::new(64);
+    Some(WorldId::from_parts(0, 1).unwrap())
+        .encode(&mut encoded)
+        .unwrap();
+    encoded.u32(1).unwrap();
+    let bytes = encoded.finish();
+    let mut decoder = Decoder::new(&bytes, bytes.len()).unwrap();
+    let illegal_default = MixtureRef::decode(&mut decoder).unwrap();
+    decoder.finish().unwrap();
+    assert_ne!(illegal_default, MixtureRef::NONE);
+
+    let mut registry = ContentRegistry::new(ContentLimits::default()).unwrap();
+    registry
+        .layer(LayerDef {
+            key: key("test:layer"),
+            role: LayerRole::Terrain,
+            render_order: 0,
+            collision_group: 1,
+            simulated: true,
+        })
+        .unwrap();
+    registry
+        .register(MaterialBuilder::new("test:a", MaterialBase::Liquid).unwrap())
+        .unwrap();
+    registry
+        .schema(Schema::of::<MixtureRef>(key("test:reference"), 1, 32).unwrap())
+        .unwrap();
+    registry
+        .material_channel(
+            key("test:layer"),
+            ChannelDefinition {
+                key: key("test:mixture"),
+                version: 1,
+                value_schema: key("test:reference"),
+                layout: GridLayout {
+                    origin: point(0, 0),
+                    x_scale: GridScale::new(1, 1).unwrap(),
+                    y_scale: GridScale::new(1, 1).unwrap(),
+                },
+                default: illegal_default,
+                limits: GridLimits {
+                    chunks: 4,
+                    checkpoint_bytes: 500_000,
+                },
+            },
+        )
+        .unwrap();
+    let content = registry.freeze().unwrap();
+    let world = World::new(
+        WorldId::from_parts(0, 1).unwrap(),
+        7,
+        WorldBounds::expandable(),
+        content,
+        WorldLimits::default(),
+    )
+    .unwrap();
+    let profile = MaterialInventoryProfile::new(
+        key("test:inventory"),
+        1,
+        vec![MaterialInventoryMixture {
+            layer: key("test:layer"),
+            channel: key("test:mixture"),
+        }],
+        Vec::new(),
+        MaterialInventoryLimits {
+            atoms: 16,
+            components: 4,
+        },
+    )
+    .unwrap();
+    assert!(
+        world
+            .load_material_archive_inventory(&profile, &mut Archives::default(), 500_000)
+            .is_err()
+    );
+}

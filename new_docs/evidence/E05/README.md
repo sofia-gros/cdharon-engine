@@ -459,8 +459,18 @@ Runtimeは専用の監査付き入口でSourceの純増を理由付きreceiptと
 
 codex/e05-material-phase-pipeline では各WorldEdit標準処理を WorldEdit::step_material_phase へ合流させた。pressure、cell force+DDA、scalar、正規粒子force+DDAを明示した設定で順番に実行し、どの後段で容量・入力に失敗しても全体をrollbackする。作者MaterialForceProviderの置換は同じtraitを通じるが、隠れた標準重力・作者state変更を注入しない。既存個別APIの意味を変更しない。
 
-- Windows/MSVC省メモリ指定で tests/material_forces **23件成功（失敗0）**。統合APIと個別の各力学/輸送呼出しの3tick報告・checkpoint完全一致、圧力の同tick参照結果、force更新後のscalar容量失敗、非simulated layerの拒否、セルから正規粒子位置への侵入防止を含む。
+- Windows/MSVC省メモリ指定で tests/material_forces **25件成功（失敗0）**。統合APIと共通予約が不要な条件での個別solverの3tick報告・checkpoint完全一致、圧力の同tick参照結果、force更新後のscalar容量失敗、非simulated layerの拒否、セルから正規粒子位置への侵入防止を含む。
 - 独立コードレビューで指定layerとWorld全域canonical粒子処理のスコープ不整合を発見した。従来World全域の力学APIを維持し、粒子DDA・粒子力積分のlayer限定APIを追加して統合phaseから使用するよう修正。2layerを同tickに順次処理する回帰で、他layerの粒子への二重積分・位置変更が発生しないことを検証した。
 - 同じ設定の tests/material_runtime **8件成功（失敗0）**。監査付きのRuntime Materials Systemから統合Q16力学+scalarを3tick実行し、World/Runtime時計・収支・各tickのrestoreが一致した。
 - さらに material_particles **30件**、material_motion **12件**、material_transport **25件**も同一省メモリ設定で成功、失敗0。全OS CIは本変更のpush後に再確認する。
+- 独立レビューで同tickのcell DDAとscalarが予約を共有せず、同じ砂を二度移動できる不具合を確認した。統合phase専用の共有CellReservationsを導入し、単独solverの既存挙動は維持した。角の横・縦検査点も先行DDAの予約に反した通過を許さない。World全域の正規粒子APIもsimulated=false layerを対象から除外し、非参加layerの所有物を保持する回帰を追加した。
+- 本実装の全11対象スイートは、単一ジョブの省メモリ設定で全件成功。E05最終マージ順は [PR_MERGE_PLAN.md](PR_MERGE_PLAN.md) の未確定台帳を参照し、Q04終了時に最後のPR本文へ確定して記載する。
 - フォーマット/Clippy・全OS CI・独立レビューは変更提出後に確認する。Q04の局所dirty/haloや広域Jobの同時予約・Provider永続化は未完了、E05全体の完成根拠にはしない。
+
+#### E05統合PRを増やさず修正を集約（2026-10-18）
+
+PR #22を新しいPRへ細分化せず、PR #10をbaseとするE05統合集約のDraftへ再構成した（commit cf8f178）。元PR #14〜#21のブランチとレビュー履歴は保存し、E05完成前に破壊的なCloseを行わない。Q04未達のため最終のマージ番号列は今は確定しない。Codexへの最終指示・除外元・merge後のゲートは [PR_MERGE_PLAN.md](PR_MERGE_PLAN.md) で管理する。
+
+追加の独立監査では、標準scalarの斜め移動で角の予約セルを空きと誤認し得る箇所、World全域粒子stepでnon-simulated layerを更新する余地、混合の全表現収支profileでMixtureRef channelの既定値NONEを検証していない箇所を確認した。セルの予約を角判定に追加し、non-simulated layerの粒子はWorld全域stepでも保持し、混合channelの初期値を必ずNONEと確認する。対象回帰ではnon-simulated layerの粒子不変、MixtureRef不正defaultでのarchive監査入口の拒否を検証した。
+
+- Windows/MSVC（1ジョブ、debug=0、codegen-units=1024、incremental無効）で material_accounting、material_forces、material_motion、material_transport、material_particles、material_runtime の6対象スイートを検査してすべて成功。混合defaultの追加単独回帰テストも成功した。全OSの更新後CIとQ04全工程出口は別途検証する。
