@@ -1,0 +1,41 @@
+# E05：圧力・物性・scalar・正規粒子を一取引へ連結するMaterials phase
+
+## 公開APIと実行順
+
+WorldEdit::step_material_phase(config, provider) はWorldの正規候補へE05の個別処理を一度だけ結合する。MaterialPhaseConfigでは圧力緩和、cellのQ16力積分とDDA輸送、標準scalar移動、正規物質粒子の力積分とDDAを個別に有効化できる。
+
+順序は pressure → cell force+DDA → scalar → canonical particle force+DDA。Noneなら該当処理を完全省略する。pressureは圧力場の緩和であり、source/sinkを生まない。すべての処理は既存の候補制限、整数演算、未読込の延期、予約、エラー診断を維持し、成功報告をMaterialPhaseReportとして返す。
+
+### 連続するcell処理の共通予約
+
+独立レビューでは、当初の力学DDAとscalarを続けて呼ぶ実装が、同tickで砂をDDAにより下へ1cell動かした後、scalarでさらに下へ1cell動かせることが判明した。両solverの単独APIはそれぞれ内部で予約を初期化するため、単純に直列呼出ししても「同じトークンをそのphaseで一度だけ動かす」という設計要件を満たさない。
+
+統合Materials phaseでは、両処理へ同一のCellReservationsを渡す。DDAで使った始点・着点・通過点と角の検査点をscalarが再利用できない。単独APIは従来通り新規予約から開始して後方互換とし、統合モードだけがphase全体のトークン予約を提供する。このため、**両処理を同時に選んだ場合の結果は、予約を共有しない旧来の直列呼出しとは意図的に異なる**。異なる前提で得た結果を決定論的一致の参照と誤認しない。
+
+またsimulated=falseのlayerは物質solverの対象外なので、phase入口とlayer指定の粒子力積分・DDA入口で拒否する。誤った指定により装飾など非物理layerの粒子が移動してしまうことを防ぎ、失敗時のcheckpoint不変を検証する。
+
+独立レビューで、初回統合APIがtarget layerの指定をcanonical粒子処理に渡さず、別layerの粒子まで各phaseで更新してしまう不具合を発見した。これを防ぐため、従来のWorld全域粒子APIはそのまま残して、`integrate_material_particle_forces_in_layer`、`step_material_particle_forces_in_layer`、`step_material_particles_in_layer`を追加した。phaseは必ず指定layerだけを処理し、先行・後続layerの粒子の二重積分・着地をしない。他layerの粒子の開始位置は従来どおり占有として予約する。
+
+同じ統合phaseではcell force+DDAとscalarを単独実行時とは異なり**共通の予約scratch**で扱い、同じトークンを一tick内に二度移動させない。どちらも無効なphase（pressure・粒子のみ）ではこのscratchを確保しない。標準DDAとscalarの通行確認は、resident正規粒子の同layerにおける現在位置を所有済みとして扱い、見かけのAIRセルに自動移動して2つのトークンを重ねない。他layerの粒子や、作者が意図的に直接重ねたWorld状態は既存契約どおり保持する。未読込・非活動域は常に待機判定を優先し、粒子の存在を理由に確定衝突として速度を消さない。
+
+独立レビューの追加指摘に従い、非simulated layerをparticleだけ指定しても移動させず、原子的なエラーとして拒否する。標準scalarとセルの整数DDAは、同layerのresident正規粒子の現在位置を一度だけ索引化し、未処理粒子の位置へtokenを侵入させない（別layerの粒子には干渉しない）。これらは既存solverの不足を修正するもので、phase APIの呼び出しだけに限定しない。元のWorld全域粒子APIは従来のlayer対象動作を維持する。
+
+独自MaterialForceProviderを同じ力学入口へ渡せる。作者がProviderのキー・版と保存済み状態を管理し、隠れた標準重力を重複させない。Providerの外部IO・未保存の可変状態は本APIが保証する取引には含まれない。
+
+## 原子的確定とRuntime
+
+WorldEdit::runで既存各処理を包むため、先行の力積分・scalar輸送・粒子移動が成功しても後段の候補上限やchannel容量失敗でWorld::editが丸ごとrollbackする。個別処理は独自の成功reportを返し、必要な部分だけを診断できる。
+
+作者は通常のWorld::edit、全表現台帳を保護するWorld::edit_material_accounted、またはRuntimeのWorldAccess::edit_material_accountedから、Materials barrierでこの統合処理を呼び出せる。region IOや永続保存を未確定World候補の内部で実行しない。
+
+## Q04の検査と未達
+
+tests/material_forces.rsでは同じcheckpointから分岐させたWorldについて、共有予約が不要な構成（力学DDA＋粒子、または圧力＋scalar＋粒子）で既存個別solverと統合APIを比較し、各report・checkpoint byte列の一致を検証する。同tickで力学DDAとscalarを併用した場合は専用回帰により、DDAで動いた砂がscalarにもう一度移動されないことを確認する。合法な力学更新後のscalar候補上限失敗と、そのErrを呼び出し元が無視する場合でも原子rollbackになることを検査する。さらに二つのlayerで各々の正規粒子を一度だけ積分することを確認する。
+
+追加の回帰試験では同layerの正規粒子の現在位置を囲んで、scalarとmotionがその空cellへ別の素材を侵入させず、別layerの粒子なら独立に通過できることを検証。非simulated layerに対するphaseと粒子限定入口はbyte単位のWorld rollbackを要求する。
+
+tests/material_runtime.rsでは、Runtime Materials phaseの監査付きSystemから、Q16力学と標準scalarを同一取引に統合。3tickの粉体の落下、World/Runtimeの時刻、全表現収支、毎tick checkpoint→World::restore一致を検証する。
+
+**この結合器だけでE05/Q04は完成しない。** 広域圧力Job・押出しJob・広域DDA Jobを同tickへ公開する際の衝突、混合反応・正規粒子の複数provider、依存halo付きdirty/sleep、IO順とRuntime複数System/workerでの参照同値性は別工程で検証する。E06/Q05の熱・反応は含めない。
+
+全体PRの整理とE05最終マージ順の確定手順は [evidence/E05/PR_MERGE_PLAN.md](evidence/E05/PR_MERGE_PLAN.md) に記録する。

@@ -599,9 +599,37 @@ impl WorldEdit<'_> {
         candidate_limit: usize,
         step_limit: usize,
     ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(None, candidate_limit, step_limit)
+    }
+
+    /// 指定layerだけの活動正規粒子を整数DDAで進めます。未処理の他layerの
+    /// 粒子位置も予約として保持し、異layerの処理順に依存しない結果にします。
+    pub fn step_material_particles_in_layer(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        step_limit: usize,
+    ) -> EngineResult<MaterialParticleReport> {
+        self.step_material_particles_filtered(Some(layer), candidate_limit, step_limit)
+    }
+
+    fn step_material_particles_filtered(
+        &mut self,
+        layer_filter: Option<LayerId>,
+        candidate_limit: usize,
+        step_limit: usize,
+    ) -> EngineResult<MaterialParticleReport> {
         self.run(|editor| {
+            if let Some(layer) = layer_filter
+                && !editor.world.content.layer(layer)?.simulated
+            {
+                return Err(invalid("正規粒子の輸送対象はsimulated layerのみ"));
+            }
             let mut ids = Vec::new();
             for (id, particle) in editor.world.particles.iter() {
+                if layer_filter.is_some_and(|layer| particle.layer != layer) {
+                    continue;
+                }
                 if particle.dormant.is_none() && editor.world.chunks.get(&ChunkCoord::at(particle.cell())).is_some_and(|c| c.active) {
                     if ids.len() == candidate_limit { return Err(EngineError::capacity("活動粒子数", ids.len() as u64 + 1, candidate_limit as u64)); }
                     ids.try_reserve(1).map_err(allocation)?;

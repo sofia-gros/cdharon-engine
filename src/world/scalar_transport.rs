@@ -39,13 +39,38 @@ impl WorldEdit<'_> {
         candidate_limit: usize,
     ) -> EngineResult<MaterialTransportReport> {
         self.run(|editor| {
+            let mut reservations = super::transport::CellReservations::new(editor.world)?;
+            editor.transport_materials_reserved(layer, candidate_limit, &mut reservations)
+        })
+    }
+
+    /// 高速DDAと標準scalarを同tickへ連結するときの共有予約入口。
+    /// DDAで触った始点・着点・通過点をscalarが再利用しません。
+    pub(super) fn transport_materials_reserved(
+        &mut self,
+        layer: LayerId,
+        candidate_limit: usize,
+        reserved: &mut super::transport::CellReservations,
+    ) -> EngineResult<MaterialTransportReport> {
+        self.run(|editor| {
             let points = editor.material_candidates(layer, candidate_limit)?;
             let left_first = editor.world.tick().is_multiple_of(2);
             let mut report = MaterialTransportReport {
                 candidates: points.len(),
                 exchanges: 0,
             };
-            let mut reserved = super::transport::CellReservations::new(editor.world)?;
+            // 正規粒子も同一layerの物質所有者です。局所scalarが空気の
+            // 地形cellだけを見て粒子座標へ自動的に移動しないよう、phase開始
+            // 時点の粒子所有位置を確定順で索引化します。
+            let mut particle_cells = Vec::new();
+            for (_, particle) in editor.world.particles.iter() {
+                if !particle.is_archived() && particle.layer == layer {
+                    let point = particle.cell();
+                    particle_cells.try_reserve(1).map_err(allocation)?;
+                    particle_cells.push((point.x, point.y));
+                }
+            }
+            particle_cells.sort_unstable();
             let side = if left_first { -1 } else { 1 };
             for source in points {
                 if reserved.contains(source) {
@@ -69,7 +94,10 @@ impl WorldEdit<'_> {
                     let Some(destination) = offset(source, dx, dy) else {
                         continue;
                     };
-                    if reserved.contains(destination)
+                    if particle_cells
+                        .binary_search(&(destination.x, destination.y))
+                        .is_ok()
+                        || reserved.contains(destination)
                         || !editor.active_transport_cell(layer, destination)?
                     {
                         continue;
@@ -97,9 +125,14 @@ impl WorldEdit<'_> {
                         // 二つの直交隣接点が共に塞がっている角は通り抜けません。
                         let horizontal = offset(source, dx, 0);
                         let vertical = offset(source, 0, dy);
-                        if !editor.empty_transport_cell(layer, horizontal)?
-                            && !editor.empty_transport_cell(layer, vertical)?
-                        {
+                        let horizontal_free = horizontal.is_some_and(|point| {
+                            particle_cells.binary_search(&(point.x, point.y)).is_err()
+                        }) && editor
+                            .empty_transport_cell(layer, horizontal)?;
+                        let vertical_free = vertical.is_some_and(|point| {
+                            particle_cells.binary_search(&(point.x, point.y)).is_err()
+                        }) && editor.empty_transport_cell(layer, vertical)?;
+                        if !horizontal_free && !vertical_free {
                             continue;
                         }
                     }

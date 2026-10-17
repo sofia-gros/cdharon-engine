@@ -349,12 +349,40 @@ impl WorldEdit<'_> {
         config: MaterialParticleForceConfig,
         provider: &dyn MaterialForceProvider,
     ) -> EngineResult<MaterialParticleForceReport> {
+        self.integrate_material_particle_forces_filtered(None, config, provider)
+    }
+
+    /// 指定layerだけの正規粒子へ力積分します。他layerの活動粒子の速度は
+    /// 更新せず、同一tick内で複数layerのphaseを呼んでも二重積分しません。
+    pub fn integrate_material_particle_forces_in_layer(
+        &mut self,
+        layer: LayerId,
+        config: MaterialParticleForceConfig,
+        provider: &dyn MaterialForceProvider,
+    ) -> EngineResult<MaterialParticleForceReport> {
+        self.integrate_material_particle_forces_filtered(Some(layer), config, provider)
+    }
+
+    fn integrate_material_particle_forces_filtered(
+        &mut self,
+        layer_filter: Option<LayerId>,
+        config: MaterialParticleForceConfig,
+        provider: &dyn MaterialForceProvider,
+    ) -> EngineResult<MaterialParticleForceReport> {
         self.run(|editor| {
             if config.max_velocity_q16 <= 0 || provider.version() == 0 {
                 return Err(invalid("正規粒子の物性速度上限・provider版"));
             }
+            if let Some(layer) = layer_filter
+                && !editor.world.content.layer(layer)?.simulated
+            {
+                return Err(invalid("正規粒子の力積分対象はsimulated layerのみ"));
+            }
             let mut handles = Vec::new();
             for (handle, particle) in editor.world.material_particles() {
+                if layer_filter.is_some_and(|layer| particle.layer() != layer) {
+                    continue;
+                }
                 if particle.is_archived() {
                     continue;
                 }
@@ -487,6 +515,27 @@ impl WorldEdit<'_> {
             let force = editor.integrate_material_particle_forces(config, provider)?;
             let particles =
                 editor.step_material_particles(config.candidate_limit, dda_step_limit)?;
+            Ok(MaterialParticleForceStepReport { force, particles })
+        })
+    }
+
+    /// 指定layerの粒子だけを力積分・整数DDA・着地まで原子的に更新します。
+    /// World全体を動かす既存APIは互換性のため残します。
+    pub fn step_material_particle_forces_in_layer(
+        &mut self,
+        layer: LayerId,
+        config: MaterialParticleForceConfig,
+        provider: &dyn MaterialForceProvider,
+        dda_step_limit: usize,
+    ) -> EngineResult<MaterialParticleForceStepReport> {
+        self.run(|editor| {
+            let force =
+                editor.integrate_material_particle_forces_in_layer(layer, config, provider)?;
+            let particles = editor.step_material_particles_in_layer(
+                layer,
+                config.candidate_limit,
+                dda_step_limit,
+            )?;
             Ok(MaterialParticleForceStepReport { force, particles })
         })
     }

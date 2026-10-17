@@ -454,3 +454,13 @@ Runtimeは専用の監査付き入口でSourceの純増を理由付きreceiptと
 - 混合massはa=30/7、b=54/7、合計12で検証。合法のMixtureRef付き輸送後に候補予算超過を発生させ、地形・channel・台帳のcheckpointが取引前と一致することを検証。粒子の速度変更を先に行った後の不正cell編集もarenaごとrollbackする。
 - World復元後、ArchiveStorageから派生cacheを作り直す。元archiveを消した場合は失敗し、復元して再読み込み後にbaselineを一致させる。region復帰後にも再集計し、退避時groupの二重計上を防止する。
 - 対象単独試験 q04_scalar_mixture_to_particle_then_archive_preserves_rational_provider_totals は省メモリWindows/MSVCで修正後に成功。全対象・CI・再レビューはPR提出後に確認する。E05全体/Q04完了の判定ではない。
+
+#### 複数material処理の一体化とRuntime Materials phase（2026-10-17）
+
+codex/e05-material-phase-pipeline では各WorldEdit標準処理を WorldEdit::step_material_phase へ合流させた。pressure、cell force+DDA、scalar、正規粒子force+DDAを明示した設定で順番に実行し、どの後段で容量・入力に失敗しても全体をrollbackする。作者MaterialForceProviderの置換は同じtraitを通じるが、隠れた標準重力・作者state変更を注入しない。既存個別APIの意味を変更しない。
+
+- Windows/MSVC省メモリ指定で tests/material_forces **23件成功（失敗0）**。統合APIと個別の各力学/輸送呼出しの3tick報告・checkpoint完全一致、圧力の同tick参照結果、force更新後のscalar容量失敗、非simulated layerの拒否、セルから正規粒子位置への侵入防止を含む。
+- 独立コードレビューで指定layerとWorld全域canonical粒子処理のスコープ不整合を発見した。従来World全域の力学APIを維持し、粒子DDA・粒子力積分のlayer限定APIを追加して統合phaseから使用するよう修正。2layerを同tickに順次処理する回帰で、他layerの粒子への二重積分・位置変更が発生しないことを検証した。
+- 同じ設定の tests/material_runtime **8件成功（失敗0）**。監査付きのRuntime Materials Systemから統合Q16力学+scalarを3tick実行し、World/Runtime時計・収支・各tickのrestoreが一致した。
+- さらに material_particles **30件**、material_motion **12件**、material_transport **25件**も同一省メモリ設定で成功、失敗0。全OS CIは本変更のpush後に再確認する。
+- フォーマット/Clippy・全OS CI・独立レビューは変更提出後に確認する。Q04の局所dirty/haloや広域Jobの同時予約・Provider永続化は未完了、E05全体の完成根拠にはしない。

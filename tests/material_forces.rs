@@ -37,6 +37,33 @@ fn content(sand_drag: u32) -> Arc<Content> {
             simulated: true,
         })
         .unwrap();
+    registry
+        .layer(LayerDef {
+            key: key("test:back"),
+            role: LayerRole::Terrain,
+            render_order: -1,
+            collision_group: 1,
+            simulated: true,
+        })
+        .unwrap();
+    registry
+        .layer(LayerDef {
+            key: key("test:decor"),
+            role: LayerRole::Decoration,
+            render_order: -2,
+            collision_group: 0,
+            simulated: false,
+        })
+        .unwrap();
+    registry
+        .layer(LayerDef {
+            key: key("test:visual-only"),
+            role: LayerRole::Decoration,
+            render_order: 2,
+            collision_group: 0,
+            simulated: false,
+        })
+        .unwrap();
     for (name, base, mass, properties) in [
         (
             "test:sand",
@@ -74,6 +101,26 @@ fn content(sand_drag: u32) -> Arc<Content> {
     }
     registry
         .schema(Schema::of::<MaterialMotion>(key("test:motion-schema"), 1, 24).unwrap())
+        .unwrap();
+    registry
+        .schema(Schema::of::<i64>(key("test:pressure-schema"), 1, 8).unwrap())
+        .unwrap();
+    registry
+        .channel(ChannelDefinition {
+            key: key("test:pressure"),
+            version: 1,
+            value_schema: key("test:pressure-schema"),
+            layout: GridLayout {
+                origin: p(0, 0),
+                x_scale: GridScale::new(1, 1).unwrap(),
+                y_scale: GridScale::new(1, 1).unwrap(),
+            },
+            default: 0i64,
+            limits: GridLimits {
+                chunks: 8,
+                checkpoint_bytes: 1_000_000,
+            },
+        })
         .unwrap();
     registry
         .material_channel(
@@ -767,4 +814,547 @@ fn force_proof_from_fork_with_same_world_and_chunk_revision_cannot_skip_motion()
         falling.cell(layer, p(8, 9)).unwrap(),
         CellQuery::Loaded(cell) if cell.core.material == sand
     ));
+}
+
+fn phase(layer: LayerId) -> MaterialPhaseConfig {
+    MaterialPhaseConfig {
+        layer,
+        pressure: None,
+        motion: Some((force(1_000_000), travel())),
+        scalar_candidate_limit: Some(100),
+        particle: Some((
+            MaterialParticleForceConfig {
+                gravity_q16: [0, 65536],
+                candidate_limit: 100,
+                max_velocity_q16: 1_000_000,
+            },
+            500,
+        )),
+    }
+}
+
+#[test]
+fn integrated_material_phase_matches_individual_reference_steps_and_checkpoint() {
+    let (mut baseline, layer) = fixture();
+    place(&mut baseline, layer, p(8, 8), "test:sand", [0, 0]);
+    place(&mut baseline, layer, p(20, 20), "test:liquid", [0, 0]);
+    baseline
+        .edit(|edit| edit.emit_material_particle(layer, p(20, 20), [0, 0]))
+        .unwrap();
+    let bytes = baseline.checkpoint(4_000_000).unwrap();
+    let mut integrated = World::restore(
+        &bytes,
+        Arc::clone(baseline.content()),
+        WorldLimits::default(),
+        bytes.len(),
+    )
+    .unwrap();
+    let mut reference = World::restore(
+        &bytes,
+        Arc::clone(baseline.content()),
+        WorldLimits::default(),
+        bytes.len(),
+    )
+    .unwrap();
+    // 独立APIとのbyte同値は共有予約が不要な構成で照合する。
+    // motionとscalarを同tickに有効にする場合は別の一回移動回帰で検証する。
+    let mut config = phase(layer);
+    config.scalar_candidate_limit = None;
+    for _ in 0..3 {
+        let normal = reference
+            .edit(|edit| {
+                let motion = edit.step_material_force_motion(
+                    layer,
+                    force(1_000_000),
+                    travel(),
+                    &StandardMaterialForces,
+                )?;
+                let particles = edit.step_material_particle_forces(
+                    MaterialParticleForceConfig {
+                        gravity_q16: [0, 65536],
+                        candidate_limit: 100,
+                        max_velocity_q16: 1_000_000,
+                    },
+                    &StandardMaterialForces,
+                    500,
+                )?;
+                Ok(MaterialPhaseReport {
+                    pressure: None,
+                    motion: Some(motion),
+                    scalar: None,
+                    particle: Some(particles),
+                })
+            })
+            .unwrap();
+        let combined = integrated
+            .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
+            .unwrap();
+        assert_eq!(combined, normal);
+        assert_eq!(
+            integrated.checkpoint(4_000_000).unwrap(),
+            reference.checkpoint(4_000_000).unwrap(),
+        );
+        integrated.edit(|edit| edit.advance_tick()).unwrap();
+        reference.edit(|edit| edit.advance_tick()).unwrap();
+    }
+}
+
+#[test]
+fn integrated_material_phase_rolls_back_force_and_dda_on_late_scalar_capacity_failure() {
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    let before = world.checkpoint(4_000_000).unwrap();
+    let mut config = phase(layer);
+    // force+DDAが実際に物質を移動した後でscalarの候補数制限に失敗する。
+    config.scalar_candidate_limit = Some(0);
+    assert!(
+        world
+            .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+}
+
+#[test]
+fn integrated_material_phase_ignored_nested_error_poison_still_rolls_back() {
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    let before = world.checkpoint(4_000_000).unwrap();
+    let mut config = phase(layer);
+    config.scalar_candidate_limit = Some(0);
+    // 呼出側が部分phaseのErrを握り潰してもWorldEdit::runが失敗を記録する。
+    assert!(
+        world
+            .edit(|edit| {
+                let _ = edit.step_material_phase(config, &StandardMaterialForces);
+                Ok(())
+            })
+            .is_err()
+    );
+    assert_eq!(before, world.checkpoint(4_000_000).unwrap());
+}
+
+#[test]
+fn integrated_phase_never_moves_same_token_twice_via_motion_then_scalar() {
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    let result = world
+        .edit(|edit| {
+            edit.step_material_phase(
+                MaterialPhaseConfig {
+                    layer,
+                    pressure: None,
+                    motion: Some((force(1_000_000), travel())),
+                    scalar_candidate_limit: Some(100),
+                    particle: None,
+                },
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    assert_eq!(result.motion.unwrap().motion.moved, 1);
+    assert_eq!(result.scalar.unwrap().exchanges, 0);
+    assert!(matches!(
+        world.cell(layer, p(8, 8)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == MaterialId::AIR
+    ));
+    assert!(matches!(
+        world.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == sand
+    ));
+    assert!(matches!(
+        world.cell(layer, p(8, 10)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == MaterialId::AIR
+    ));
+}
+
+#[test]
+fn material_phase_rejects_non_simulated_layers_without_world_mutation() {
+    let (mut world, _front) = fixture();
+    let layer = world.content().layer_id(key("test:decor")).unwrap();
+    let snapshot = world.checkpoint(4_000_000).unwrap();
+    let particle = MaterialParticleForceConfig {
+        gravity_q16: [0, 65536],
+        candidate_limit: 16,
+        max_velocity_q16: 1_000_000,
+    };
+    let phase = MaterialPhaseConfig {
+        layer,
+        pressure: None,
+        motion: None,
+        scalar_candidate_limit: None,
+        particle: Some((particle, 16)),
+    };
+    assert!(
+        world
+            .edit(|edit| edit.step_material_phase(phase, &StandardMaterialForces))
+            .is_err()
+    );
+    assert!(
+        world
+            .edit(|edit| edit.integrate_material_particle_forces_in_layer(
+                layer,
+                particle,
+                &StandardMaterialForces
+            ))
+            .is_err()
+    );
+    assert!(
+        world
+            .edit(|edit| edit.step_material_particles_in_layer(layer, 16, 16))
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(4_000_000).unwrap(), snapshot);
+}
+
+#[test]
+fn integrated_material_phase_pressure_and_scalar_match_reference_same_tick() {
+    let (mut baseline, layer) = fixture();
+    place(&mut baseline, layer, p(8, 8), "test:liquid", [0, 0]);
+    place(&mut baseline, layer, p(9, 8), "test:water", [0, 0]);
+    let bytes = baseline.checkpoint(4_000_000).unwrap();
+    let mut reference = World::restore(
+        &bytes,
+        Arc::clone(baseline.content()),
+        WorldLimits::default(),
+        bytes.len(),
+    )
+    .unwrap();
+    let mut combined = World::restore(
+        &bytes,
+        Arc::clone(baseline.content()),
+        WorldLimits::default(),
+        bytes.len(),
+    )
+    .unwrap();
+    let pressure = PressureRelaxation {
+        channel: key("test:pressure"),
+        iterations: 4,
+        gravity_q16: 65536,
+        cell_limit: 16,
+    };
+    let mut config = phase(layer);
+    config.pressure = Some(pressure);
+    config.motion = None;
+    let expected = reference
+        .edit(|edit| {
+            let pressure_report = edit.relax_pressure(layer, pressure)?;
+            let scalar_report = edit.transport_materials(layer, 100)?;
+            let particle_report = edit.step_material_particle_forces(
+                MaterialParticleForceConfig {
+                    gravity_q16: [0, 65536],
+                    candidate_limit: 100,
+                    max_velocity_q16: 1_000_000,
+                },
+                &StandardMaterialForces,
+                500,
+            )?;
+            Ok(MaterialPhaseReport {
+                pressure: Some(pressure_report),
+                motion: None,
+                scalar: Some(scalar_report),
+                particle: Some(particle_report),
+            })
+        })
+        .unwrap();
+    let actual = combined
+        .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
+        .unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.pressure.unwrap().cells, 2);
+    assert_eq!(
+        combined.checkpoint(4_000_000).unwrap(),
+        reference.checkpoint(4_000_000).unwrap(),
+    );
+}
+
+#[test]
+fn particle_stage_is_layer_scoped_and_cannot_integrate_other_layers_twice() {
+    let (mut world, front) = fixture();
+    let back = world.content().layer_id(key("test:back")).unwrap();
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    let front_handle = world
+        .edit(|edit| {
+            edit.set_cell(
+                front,
+                p(8, 8),
+                CellCore {
+                    material: sand,
+                    ..CellCore::AIR
+                },
+            )?;
+            edit.emit_material_particle(front, p(8, 8), [0, 0])
+        })
+        .unwrap();
+    let back_handle = world
+        .edit(|edit| {
+            edit.set_cell(
+                back,
+                p(16, 16),
+                CellCore {
+                    material: sand,
+                    ..CellCore::AIR
+                },
+            )?;
+            edit.emit_material_particle(back, p(16, 16), [0, 0])
+        })
+        .unwrap();
+    let config = MaterialPhaseConfig {
+        layer: front,
+        pressure: None,
+        motion: None,
+        scalar_candidate_limit: None,
+        particle: Some((
+            MaterialParticleForceConfig {
+                gravity_q16: [0, 65536],
+                candidate_limit: 1,
+                max_velocity_q16: 1_000_000,
+            },
+            100,
+        )),
+    };
+    let first = world
+        .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
+        .unwrap();
+    assert_eq!(first.particle.unwrap().force.candidates, 1);
+    assert_eq!(
+        world
+            .material_particle(front_handle)
+            .unwrap()
+            .velocity_q16(),
+        [0, 65536]
+    );
+    assert_eq!(
+        world.material_particle(back_handle).unwrap().velocity_q16(),
+        [0, 0]
+    );
+    let front_cell = world.material_particle(front_handle).unwrap().cell();
+    let second = world
+        .edit(|edit| {
+            edit.step_material_phase(
+                MaterialPhaseConfig {
+                    layer: back,
+                    ..config
+                },
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    assert_eq!(second.particle.unwrap().force.candidates, 1);
+    assert_eq!(
+        world.material_particle(back_handle).unwrap().velocity_q16(),
+        [0, 65536]
+    );
+    assert_eq!(
+        world
+            .material_particle(front_handle)
+            .unwrap()
+            .velocity_q16(),
+        [0, 65536]
+    );
+    assert_eq!(
+        world.material_particle(front_handle).unwrap().cell(),
+        front_cell
+    );
+}
+
+#[test]
+fn scalar_and_motion_never_move_resident_material_onto_a_canonical_particle() {
+    let (mut world, layer) = fixture();
+    place(&mut world, layer, p(8, 9), "test:sand", [0, 0]);
+    let particle = world
+        .edit(|edit| edit.emit_material_particle(layer, p(8, 9), [0, 0]))
+        .unwrap();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 0]);
+    // 粉体が斜めに逃げた場合も検出できるよう左右斜めを塞ぐ。
+    place(&mut world, layer, p(7, 9), "test:wall", [0, 0]);
+    place(&mut world, layer, p(9, 9), "test:wall", [0, 0]);
+    let scalar = world
+        .edit(|edit| edit.transport_materials(layer, 100))
+        .unwrap();
+    assert_eq!(scalar.exchanges, 0);
+    assert!(matches!(
+        world.cell(layer, p(8, 8)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material != MaterialId::AIR
+    ));
+    assert!(matches!(
+        world.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == MaterialId::AIR
+    ));
+    world
+        .edit(|edit| {
+            edit.set_channel(
+                key("test:motion"),
+                p(8, 8),
+                MaterialMotion {
+                    velocity_q16: [0, 65536],
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+    let motion_report = world
+        .edit(|edit| edit.transport_material_motion(layer, travel()))
+        .unwrap();
+    assert_eq!(motion_report.moved, 0);
+    assert!(motion_report.collisions >= 1);
+    assert_eq!(world.material_particle(particle).unwrap().cell(), p(8, 9));
+    assert!(matches!(
+        world.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material == MaterialId::AIR
+    ));
+}
+
+#[test]
+fn integrated_phase_shares_reservations_and_never_moves_a_cell_twice_in_one_tick() {
+    let (mut world, layer) = fixture();
+    // fixtureの砂は抗力50%なので、初速2cell/tickでDDAに1cell残す。
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 2 * 65536]);
+    let config = MaterialPhaseConfig {
+        layer,
+        pressure: None,
+        motion: Some((
+            MaterialForceConfig {
+                channel: key("test:motion"),
+                gravity_q16: [0, 0],
+                candidate_limit: 32,
+                max_velocity_q16: 1_000_000,
+            },
+            travel(),
+        )),
+        scalar_candidate_limit: Some(32),
+        particle: None,
+    };
+    let report = world
+        .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
+        .unwrap();
+    assert_eq!(report.motion.unwrap().motion.moved, 1);
+    assert_eq!(report.scalar.unwrap().exchanges, 0);
+    let sand = world
+        .content()
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    assert!(matches!(
+        world.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(value) if value.core.material == sand
+    ));
+    assert!(matches!(
+        world.cell(layer, p(8, 10)).unwrap(),
+        CellQuery::Loaded(value) if value.core.material == MaterialId::AIR
+    ));
+}
+
+#[test]
+fn cell_motion_and_scalar_must_not_move_into_canonical_particle_source() {
+    let (mut initial, layer) = fixture();
+    place(&mut initial, layer, p(8, 8), "test:sand", [0, 65536]);
+    place(&mut initial, layer, p(8, 9), "test:sand", [0, 0]);
+    place(&mut initial, layer, p(7, 9), "test:wall", [0, 0]);
+    place(&mut initial, layer, p(9, 9), "test:wall", [0, 0]);
+    let particle = initial
+        .edit(|edit| edit.emit_material_particle(layer, p(8, 9), [0, 0]))
+        .unwrap();
+    let serialized = initial.checkpoint(4_000_000).unwrap();
+    let mut motion_world = World::restore(
+        &serialized,
+        Arc::clone(initial.content()),
+        WorldLimits::default(),
+        serialized.len(),
+    )
+    .unwrap();
+    let mut scalar_world = World::restore(
+        &serialized,
+        Arc::clone(initial.content()),
+        WorldLimits::default(),
+        serialized.len(),
+    )
+    .unwrap();
+    let report = motion_world
+        .edit(|edit| edit.transport_material_motion(layer, travel()))
+        .unwrap();
+    assert!(report.collisions > 0);
+    let scalar = scalar_world
+        .edit(|edit| edit.transport_materials(layer, 100))
+        .unwrap();
+    assert_eq!(scalar.exchanges, 0);
+    for world in [&motion_world, &scalar_world] {
+        assert!(matches!(
+            world.cell(layer, p(8, 9)).unwrap(),
+            CellQuery::Loaded(cell) if cell.core.material == MaterialId::AIR,
+        ));
+        assert_eq!(world.material_particle(particle).unwrap().cell(), p(8, 9));
+    }
+}
+
+#[test]
+fn material_transport_does_not_block_on_a_particle_in_another_layer() {
+    let (mut world, layer) = fixture();
+    let other = world.content().layer_id(key("test:back")).unwrap();
+    place(&mut world, layer, p(8, 8), "test:sand", [0, 65536]);
+    place(&mut world, other, p(8, 9), "test:sand", [0, 0]);
+    let other_particle = world
+        .edit(|edit| edit.emit_material_particle(other, p(8, 9), [0, 0]))
+        .unwrap();
+    let report = world
+        .edit(|edit| edit.transport_material_motion(layer, travel()))
+        .unwrap();
+    assert_eq!(report.moved, 1);
+    assert_eq!(
+        world.material_particle(other_particle).unwrap().cell(),
+        p(8, 9)
+    );
+    assert!(matches!(
+        world.cell(layer, p(8, 9)).unwrap(),
+        CellQuery::Loaded(cell) if cell.core.material != MaterialId::AIR,
+    ));
+}
+
+#[test]
+fn material_phase_and_particle_only_entry_reject_non_simulated_layer_atomically() {
+    let (mut world, _) = fixture();
+    let visual = world.content().layer_id(key("test:visual-only")).unwrap();
+    let before = world.checkpoint(4_000_000).unwrap();
+    let config = MaterialPhaseConfig {
+        layer: visual,
+        pressure: None,
+        motion: None,
+        scalar_candidate_limit: None,
+        particle: Some((
+            MaterialParticleForceConfig {
+                gravity_q16: [0, 65536],
+                candidate_limit: 8,
+                max_velocity_q16: 1_000_000,
+            },
+            20,
+        )),
+    };
+    assert!(
+        world
+            .edit(|edit| edit.step_material_phase(config, &StandardMaterialForces))
+            .is_err()
+    );
+    assert!(
+        world
+            .edit(|edit| {
+                edit.integrate_material_particle_forces_in_layer(
+                    visual,
+                    config.particle.unwrap().0,
+                    &StandardMaterialForces,
+                )
+            })
+            .is_err()
+    );
+    assert!(
+        world
+            .edit(|edit| edit.step_material_particles_in_layer(visual, 8, 20))
+            .is_err()
+    );
+    assert_eq!(world.checkpoint(4_000_000).unwrap(), before);
 }

@@ -1,7 +1,9 @@
 //! E05収支監査をRuntime Materials barrierへ接続する公開APIの統合試験。
 use charon_engine::{
     foundation::{
-        EngineError, EngineResult, ErrorCode, StableKey, grid::CellPoint, schema::Schema,
+        EngineError, EngineResult, ErrorCode, StableKey,
+        grid::{CellPoint, GridLayout, GridLimits, GridScale},
+        schema::Schema,
     },
     runtime::{
         Engine, StepResult,
@@ -66,6 +68,29 @@ fn build_content() -> Arc<Content> {
     registry
         .schema(Schema::of::<u64>(key("test:debug-schema"), 1, 8).unwrap())
         .unwrap();
+    registry
+        .schema(Schema::of::<MaterialMotion>(key("test:motion-schema"), 1, 24).unwrap())
+        .unwrap();
+    registry
+        .material_channel(
+            key("test:layer"),
+            ChannelDefinition {
+                key: key("test:motion"),
+                version: 1,
+                value_schema: key("test:motion-schema"),
+                layout: GridLayout {
+                    origin: p(0, 0),
+                    x_scale: GridScale::new(1, 1).unwrap(),
+                    y_scale: GridScale::new(1, 1).unwrap(),
+                },
+                default: MaterialMotion::default(),
+                limits: GridLimits {
+                    chunks: 8,
+                    checkpoint_bytes: 1_000_000,
+                },
+            },
+        )
+        .unwrap();
     registry.freeze().unwrap()
 }
 
@@ -77,6 +102,7 @@ struct AuditedMaterialSystem {
     unaccounted_raw_state: bool,
     recorded_source: bool,
     raw_then_audited: bool,
+    apply_pipeline: bool,
 }
 impl System for AuditedMaterialSystem {
     fn run(&mut self, ctx: &mut SystemContext<'_>) -> EngineResult<WorkStatus> {
@@ -101,6 +127,7 @@ impl System for AuditedMaterialSystem {
         let fail = self.inject_unrecorded_source;
         let swallow = self.swallow_nested_error;
         let recorded_source = self.recorded_source;
+        let apply_pipeline = self.apply_pipeline;
         if self.raw_then_audited {
             // 同tickの先行barrierが物質を未記録で発行する。後続の監査付き
             // 原子取引はその改竄を見逃さず、Runtime全体の候補を破棄する。
@@ -151,6 +178,32 @@ impl System for AuditedMaterialSystem {
                 }),
             },
             move |edit| {
+                if apply_pipeline {
+                    edit.step_material_phase(
+                        MaterialPhaseConfig {
+                            layer,
+                            pressure: None,
+                            motion: Some((
+                                MaterialForceConfig {
+                                    channel: key("test:motion"),
+                                    gravity_q16: [0, 0],
+                                    candidate_limit: 16,
+                                    max_velocity_q16: 65536,
+                                },
+                                MaterialMotionConfig {
+                                    channel: key("test:motion"),
+                                    candidate_limit: 16,
+                                    max_distance: 8,
+                                    step_limit: 128,
+                                },
+                            )),
+                            scalar_candidate_limit: Some(16),
+                            particle: None,
+                        },
+                        &StandardMaterialForces,
+                    )?;
+                    return Ok(());
+                }
                 edit.transport_path(layer, &[p(2, 1), p(1, 1)])?;
                 if swallow {
                     // 意図的にErrを無視しても、WorldEditは失敗を覚えており
@@ -188,6 +241,7 @@ fn engine_with_failure(
     raw_state: bool,
     recorded_source: bool,
     raw_then_audited: bool,
+    apply_pipeline: bool,
 ) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
     let content = build_content();
     let profile = Arc::new(profile());
@@ -241,6 +295,7 @@ fn engine_with_failure(
                 unaccounted_raw_state: raw_state,
                 recorded_source,
                 raw_then_audited,
+                apply_pipeline,
             },
         )
         .build()
@@ -248,7 +303,7 @@ fn engine_with_failure(
     (runtime, content, profile)
 }
 fn engine(fail: bool) -> (Engine, Arc<Content>, Arc<MaterialInventoryProfile>) {
-    engine_with_failure(fail, false, false, false, false, false)
+    engine_with_failure(fail, false, false, false, false, false, false)
 }
 fn at(world: &World, layer: LayerId, point: CellPoint) -> MaterialId {
     match world.cell(layer, point).unwrap() {
@@ -313,7 +368,7 @@ fn runtime_rejects_unaccounted_source_and_rolls_back_entire_tick() {
 #[test]
 fn ignored_nested_edit_error_cannot_publish_a_partial_material_tick() {
     let (mut runtime, content, profile) =
-        engine_with_failure(false, true, false, false, false, false);
+        engine_with_failure(false, true, false, false, false, false, false);
     let id = runtime.worlds().id("world").unwrap();
     let before = runtime.worlds().checkpoint(id).unwrap();
     assert!(runtime.step(TickInput::empty(1)).is_err());
@@ -339,7 +394,7 @@ fn ignored_nested_edit_error_cannot_publish_a_partial_material_tick() {
 #[test]
 fn runtime_raw_material_edit_remains_available_but_is_detected_by_explicit_audit() {
     let (mut runtime, content, profile) =
-        engine_with_failure(false, false, true, false, false, false);
+        engine_with_failure(false, false, true, false, false, false, false);
     let id = runtime.worlds().id("world").unwrap();
     assert_eq!(
         runtime.step(TickInput::empty(1)).unwrap(),
@@ -362,7 +417,7 @@ fn runtime_raw_material_edit_remains_available_but_is_detected_by_explicit_audit
 #[test]
 fn runtime_explicit_material_source_writes_audited_receipt_and_restores() {
     let (mut runtime, content, profile) =
-        engine_with_failure(false, false, false, false, true, false);
+        engine_with_failure(false, false, false, false, true, false, false);
     let id = runtime.worlds().id("world").unwrap();
     assert_eq!(
         runtime.step(TickInput::empty(1)).unwrap(),
@@ -396,7 +451,7 @@ fn runtime_explicit_material_source_writes_audited_receipt_and_restores() {
 #[test]
 fn runtime_unrelated_author_state_put_remains_available_with_accounting() {
     let (mut runtime, _content, profile) =
-        engine_with_failure(false, false, false, true, false, false);
+        engine_with_failure(false, false, false, true, false, false, false);
     let id = runtime.worlds().id("world").unwrap();
     assert_eq!(
         runtime.step(TickInput::empty(1)).unwrap(),
@@ -416,7 +471,7 @@ fn runtime_unrelated_author_state_put_remains_available_with_accounting() {
 #[test]
 fn raw_then_accounted_in_one_materials_barrier_rolls_back_entire_runtime_tick() {
     let (mut runtime, content, profile) =
-        engine_with_failure(false, false, false, false, false, true);
+        engine_with_failure(false, false, false, false, false, true, false);
     let id = runtime.worlds().id("world").unwrap();
     let before = runtime.worlds().checkpoint(id).unwrap();
     // raw編集の直後にaccounted編集を同じMaterials barrierへ予約。
@@ -433,4 +488,39 @@ fn raw_then_accounted_in_one_materials_barrier_rolls_back_entire_runtime_tick() 
     terrain
         .verify_material_accounting(&profile, &cache, key("test:balance"))
         .unwrap();
+}
+
+#[test]
+fn runtime_materials_phase_pipeline_moves_sand_and_keeps_accounting_over_ticks() {
+    let (mut runtime, content, profile) =
+        engine_with_failure(false, false, false, false, false, false, true);
+    let id = runtime.worlds().id("world").unwrap();
+    let layer = content.layer_id(key("test:layer")).unwrap();
+    let sand = content
+        .material_id(MaterialHandle(key("test:sand")))
+        .unwrap();
+    for tick in 1..=3 {
+        assert_eq!(
+            runtime.step(TickInput::empty(tick)).unwrap(),
+            StepResult::Complete(tick)
+        );
+        let terrain = runtime.worlds().terrain(id).unwrap();
+        assert_eq!(terrain.tick(), tick);
+        assert_eq!(at(terrain, layer, p(1, tick as i32 + 1)), sand);
+        let cache = terrain
+            .load_material_archive_inventory(&profile, &mut NoArchives, 1_000_000)
+            .unwrap();
+        terrain
+            .verify_material_accounting(&profile, &cache, key("test:balance"))
+            .unwrap();
+        let snapshot = runtime.worlds().checkpoint(id).unwrap();
+        let restored = World::restore(
+            &snapshot,
+            Arc::clone(&content),
+            WorldLimits::default(),
+            snapshot.len(),
+        )
+        .unwrap();
+        assert_eq!(restored.checkpoint(snapshot.len()).unwrap(), snapshot);
+    }
 }

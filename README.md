@@ -55,6 +55,8 @@ E05の次の開発単位として、[全表現の物質収支と監査付き保�
 
 [Q04の横断統合](new_docs/42_Q04_CROSS_REPRESENTATION.md)では、混合有理量、作者body/reservoir Provider、通常scalar、正規粒子化、archive退避・保存復元・復帰を同じ台帳で連続検証する試験を追加しました。Runtimeでは明示Source receiptと保存復元を確認し、既定の作者状態Putは保護しつつ、未監査の地形編集で生じた記録漏れを後続verifyで検出します。全表現収支19件とRuntime6件の対象テストは省メモリWindows/MSVCで成功。大規模な圧力/粒子/広域Job・複数Runtime System・依存halo wake等を含むQ04全体の証拠は未完成です。
 
+[E05の統合Materials phase](new_docs/43_MATERIAL_PHASE_PIPELINE.md)も公開しました。圧力、Q16力学+速度DDA、標準scalar、正規粒子力学+DDAの実行・省略を明示し、後段の容量失敗では先行処理も含めて原子的にrollbackします。複数tickの個別参照処理とのreport・checkpoint一致を新規の2テストで、Runtime Materials barrierの監査付き粉体移動と3tickの保存復元を1テストで確認しました。既存の計測済み個別処理を結合する入口であり、広域継続Job・Sleep halo・E06熱処理の完成宣言ではありません。
+
 [粉体・液体・気体の標準scalar静止Sleep](new_docs/41_SCALAR_MATERIAL_SLEEP.md)でも、tickの左右交互走査を根拠なく省略せず、両向きの合法な交換先が全active領域にない場合だけキャッシュします。別chunkの編集、通路開放によるwake、毎tickの通常輸送との正規checkpoint一致、保存した証明の再検証、候補容量失敗を公開APIの3テストで確認しました。標準以外のruleや圧力・熱を寝かせる機能ではなく、chunk単位のdirty最適化とQ04全体の統合は未完了です。
 
 E04では、素材別寸法・多layer・疎なchunk・個体・原子的編集・lease・生成baseと編集差分・独自channel・remap・Runtime・世代保存・区域の退避と復帰を接続しました。[公開APIと保存契約](new_docs/29_WORLD_AND_PERSISTENCE.md)、[検証記録](new_docs/evidence/E04/README.md)に、実行した検査と残る後工程を記載しています。新設計に沿った世界・マテリアル・物理・ゲーム共通サービス、完成した表現・音響、通信、制作ツールと商用認定は[工程表](new_docs/19_IMPLEMENTATION_ROADMAP.md)に従って実装・検証します。既存のシミュレーションやゲーム作例があることだけで、新工程を通過したとは判定しません。
