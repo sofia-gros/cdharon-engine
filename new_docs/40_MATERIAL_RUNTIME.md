@@ -1,0 +1,17 @@
+# E05：Runtime Materials barrierと全表現の物質収支監査
+
+## 問題と公開API
+
+従来の WorldAccess::edit_terrain はWorldEditのcallbackだけを受けるため、World全体の実データ（archive cache、作者Provider、理由付き台帳）を処理の前後で確認する World::edit_material_accounted を呼べなかった。
+
+新しい WorldAccess::edit_terrain_world はFnOnce(&mut World) -> EngineResult<()>をbarrierへ登録する入口。従来と同じengine:terrain書込権限、sandbox所属のWorldID検査、Runtimeのclock不変条件を適用する。作者はbarrierの外で適切なprofileと読み取り専用archive snapshotを準備し、callback内でWorld::edit_material_accountedを実行する。callback自体は保存せず、Worldの確定結果と台帳・checkpointを保存する。
+
+Command::TerrainはもともとWorld全体を受け取るcallbackを保持しているため、追加の非永続command形式は不要。SceneとSystemの途中状態やMaterials phaseでの複数System順序は既存のPendingTickとbarrierが管理する。失敗したcallbackはWorld候補を確定しないだけでなくRuntime tick全体のcommitも拒否する。Phase::Materialsとbarrierを明示すれば同tickの後続Systemは候補を参照できる。
+
+## Q04への検証範囲
+
+tests/material_runtime.rsは、収支台帳のbaselineを登録したWorldをRuntimeのMaterials Systemへ渡し、原子輸送により物質量が変わらないこと、Runtime/Worldのtickが一致すること、保存・再開後も台帳検証に成功することを検査する。
+
+同一barrierへ未記録のsourceを意図的に追加したケースは台帳との不一致となり、tick・地形・台帳・World revisionを含む完全checkpointが更新前の値を維持することを検証する。
+
+このAPIはRuntimeと監査経路の接続を提供する。Q04を合格とするには粉体/液体/気体と圧力押出し、混合、正規粒子、進行Job、Sleepと同tickの組合せ、worker/streaming順、復元後の各tick一致とfault injectionが別途必要である。

@@ -49,6 +49,8 @@ Cargoはビルドへ含める実装と依存を選び、YAMLはエンジンの�
 | [36_MATERIAL_ACCOUNTING.md](36_MATERIAL_ACCOUNTING.md) | 実装中のE05：全表現の物質収支・理由付き増減と監査付き保存 |
 | [37_MATERIAL_FORCES.md](37_MATERIAL_FORCES.md) | 実装中のE05：Q16物性・標準/独自Providerの力積分・速度DDA統合 |
 | [38_MATERIAL_MOTION_JOB.md](38_MATERIAL_MOTION_JOB.md) | 実装中のE05：広域単一tokenの保存再開できるDDA経路検索と原子的公開 |
+| [39_MATERIAL_SLEEP.md](39_MATERIAL_SLEEP.md) | 実装中のE05：標準力学の静止証明・wake・逐tick参照一致 |
+| [40_MATERIAL_RUNTIME.md](40_MATERIAL_RUNTIME.md) | 実装中のE05：Runtime Materials barrierと全表現収支監査付き編集 |
 | [34_MATERIAL_MIXTURES.md](34_MATERIAL_MIXTURES.md) | 実装中のE05：整数比率の共有組成、正確な成分量、混合・分離とreceiptの取引 |
 | [33_WIDE_PRESSURE.md](33_WIDE_PRESSURE.md) | 実装中のE05：気体の温度・連結容積と保存可能な広域圧力job |
 | [32_MATERIAL_RECEIPTS.md](32_MATERIAL_RECEIPTS.md) | 実装中のE05：cell変更と理由付きreceiptの原子的保存 |

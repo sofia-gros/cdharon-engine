@@ -434,3 +434,283 @@ fn particle_force_failure_rolls_back_velocity_and_material_ownership() {
         [0, 0]
     );
 }
+
+fn zero_gravity() -> MaterialForceConfig {
+    MaterialForceConfig {
+        gravity_q16: [0, 0],
+        ..force(1_000_000)
+    }
+}
+
+#[test]
+fn sleeping_standard_force_matches_scalar_reference_every_tick_and_wakes_on_edit() {
+    let (mut reference, layer) = fixture();
+    place(&mut reference, layer, p(8, 8), "test:sand", [0, 0]);
+    let bytes = reference.checkpoint(4_000_000).unwrap();
+    let mut optimized = World::restore(
+        &bytes,
+        Arc::clone(reference.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let mut tracker = MaterialSleepTracker::default();
+    for index in 0..8 {
+        let plain = reference
+            .edit(|edit| {
+                edit.step_material_force_motion(
+                    layer,
+                    zero_gravity(),
+                    travel(),
+                    &StandardMaterialForces,
+                )
+            })
+            .unwrap();
+        let cached = optimized
+            .step_standard_material_force_motion_sleeping(
+                &mut tracker,
+                layer,
+                zero_gravity(),
+                travel(),
+            )
+            .unwrap();
+        assert_eq!(plain, cached.reference);
+        assert_eq!(cached.sleeping, index != 0);
+        assert_eq!(
+            reference.checkpoint(4_000_000).unwrap(),
+            optimized.checkpoint(4_000_000).unwrap()
+        );
+        reference.edit(|edit| edit.advance_tick()).unwrap();
+        optimized.edit(|edit| edit.advance_tick()).unwrap();
+    }
+    // channelを別取引で変更するとchunk revisionが変わるのでwakeします。
+    for world in [&mut reference, &mut optimized] {
+        world
+            .edit(|edit| {
+                edit.set_channel(
+                    key("test:motion"),
+                    p(8, 8),
+                    MaterialMotion {
+                        velocity_q16: [65536, 0],
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap();
+    }
+    let plain = reference
+        .edit(|edit| {
+            edit.step_material_force_motion(
+                layer,
+                zero_gravity(),
+                travel(),
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    let cached = optimized
+        .step_standard_material_force_motion_sleeping(&mut tracker, layer, zero_gravity(), travel())
+        .unwrap();
+    assert!(!cached.sleeping);
+    assert!(cached.woke);
+    assert_eq!(cached.reference, plain);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        optimized.checkpoint(4_000_000).unwrap()
+    );
+}
+
+#[test]
+fn sleeping_solid_is_woken_by_falling_material_and_never_skips_nonzero_gravity() {
+    let (mut reference, layer) = fixture();
+    place(&mut reference, layer, p(8, 8), "test:wall", [0, 0]);
+    let bytes = reference.checkpoint(4_000_000).unwrap();
+    let mut optimized = World::restore(
+        &bytes,
+        Arc::clone(reference.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let mut tracker = MaterialSleepTracker::default();
+    let plain = reference
+        .edit(|edit| {
+            edit.step_material_force_motion(
+                layer,
+                force(1_000_000),
+                travel(),
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    let first = optimized
+        .step_standard_material_force_motion_sleeping(
+            &mut tracker,
+            layer,
+            force(1_000_000),
+            travel(),
+        )
+        .unwrap();
+    assert_eq!(plain, first.reference);
+    assert!(tracker.has_proof());
+    let plain = reference
+        .edit(|edit| {
+            edit.step_material_force_motion(
+                layer,
+                force(1_000_000),
+                travel(),
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    let slept = optimized
+        .step_standard_material_force_motion_sleeping(
+            &mut tracker,
+            layer,
+            force(1_000_000),
+            travel(),
+        )
+        .unwrap();
+    assert!(slept.sleeping);
+    assert_eq!(plain, slept.reference);
+    for world in [&mut reference, &mut optimized] {
+        place(world, layer, p(10, 8), "test:sand", [0, 0]);
+    }
+    let plain = reference
+        .edit(|edit| {
+            edit.step_material_force_motion(
+                layer,
+                force(1_000_000),
+                travel(),
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    let wake = optimized
+        .step_standard_material_force_motion_sleeping(
+            &mut tracker,
+            layer,
+            force(1_000_000),
+            travel(),
+        )
+        .unwrap();
+    assert!(!wake.sleeping);
+    assert!(wake.woke);
+    assert_eq!(plain, wake.reference);
+    assert!(!tracker.has_proof());
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        optimized.checkpoint(4_000_000).unwrap()
+    );
+}
+
+#[test]
+fn sleeping_proof_is_codec_safe_and_wrong_profile_falls_back_to_reference() {
+    use charon_engine::foundation::codec::{Decoder, Encoder, StateCodec};
+    let (mut reference, layer) = fixture();
+    place(&mut reference, layer, p(8, 8), "test:sand", [0, 0]);
+    let mut tracker = MaterialSleepTracker::default();
+    reference
+        .step_standard_material_force_motion_sleeping(&mut tracker, layer, zero_gravity(), travel())
+        .unwrap();
+    assert!(tracker.has_proof());
+    let mut encoder = Encoder::new(1_000_000);
+    tracker.encode(&mut encoder).unwrap();
+    let bytes = encoder.finish();
+    let mut reader = Decoder::new(&bytes, bytes.len()).unwrap();
+    let mut restored_cache = MaterialSleepTracker::decode(&mut reader).unwrap();
+    reader.finish().unwrap();
+    let world_bytes = reference.checkpoint(4_000_000).unwrap();
+    let mut restored_world = World::restore(
+        &world_bytes,
+        Arc::clone(reference.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    // 保存復元後はrevision差分の通知がないため、危険なskipをせず再評価。
+    let plain = reference
+        .edit(|edit| {
+            edit.step_material_force_motion(
+                layer,
+                zero_gravity(),
+                travel(),
+                &StandardMaterialForces,
+            )
+        })
+        .unwrap();
+    let result = restored_world
+        .step_standard_material_force_motion_sleeping(
+            &mut restored_cache,
+            layer,
+            zero_gravity(),
+            travel(),
+        )
+        .unwrap();
+    assert!(!result.sleeping);
+    assert_eq!(result.reference, plain);
+    assert_eq!(
+        reference.checkpoint(4_000_000).unwrap(),
+        restored_world.checkpoint(4_000_000).unwrap()
+    );
+    // 証明は候補予算にも紐づき、より小さい予算へ再利用して失敗を隠さない。
+    let unchanged = restored_world.checkpoint(4_000_000).unwrap();
+    let mut smaller = travel();
+    smaller.candidate_limit = 0;
+    assert!(
+        restored_world
+            .step_standard_material_force_motion_sleeping(
+                &mut restored_cache,
+                layer,
+                zero_gravity(),
+                smaller,
+            )
+            .is_err()
+    );
+    assert_eq!(restored_world.checkpoint(4_000_000).unwrap(), unchanged);
+}
+
+#[test]
+fn unavailable_neighbor_does_not_turn_reference_wait_into_false_sleep() {
+    let (mut reference, layer) = fixture();
+    // 重力倍率が0の静止素材でも、参照forceは重力側の未読込を
+    // waiting_for_regionへ記録します。sleepがこの結果を消してはいけません。
+    place(&mut reference, layer, p(8, 63), "test:wall", [0, 0]);
+    let snapshot = reference.checkpoint(4_000_000).unwrap();
+    let mut optimized = World::restore(
+        &snapshot,
+        Arc::clone(reference.content()),
+        WorldLimits::default(),
+        4_000_000,
+    )
+    .unwrap();
+    let mut tracker = MaterialSleepTracker::default();
+    for _ in 0..3 {
+        let normal = reference
+            .edit(|edit| {
+                edit.step_material_force_motion(
+                    layer,
+                    force(1_000_000),
+                    travel(),
+                    &StandardMaterialForces,
+                )
+            })
+            .unwrap();
+        assert_eq!(normal.force.waiting_for_region, 1);
+        let result = optimized
+            .step_standard_material_force_motion_sleeping(
+                &mut tracker,
+                layer,
+                force(1_000_000),
+                travel(),
+            )
+            .unwrap();
+        assert_eq!(result.reference, normal);
+        assert!(!result.sleeping);
+        assert!(!tracker.has_proof());
+        assert_eq!(
+            reference.checkpoint(4_000_000).unwrap(),
+            optimized.checkpoint(4_000_000).unwrap(),
+        );
+    }
+}

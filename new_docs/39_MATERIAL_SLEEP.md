@@ -1,0 +1,25 @@
+# E05：停止証明に基づく標準物性のDirty/Sleep/Wake
+
+## 正規状態とsleep証明を混同しない
+
+MaterialSleepTracker はWorldの正規保存状態ではなく、標準の力積分と速度DDAが次tickにも完全に恒等になることを実際の全候補から証明した派生cacheである。非空・非blockの全active素材についてMaterialMotionの速度と端数が0、物性の重力倍率・浮力倍率が0（または入力重力が0）、直前の標準force/DDAの候補数と一致し移動・衝突・待機が一件もないことを必要条件とする。
+
+Worldの変化は公開revisionとactive chunkごとのrevision、Content fingerprint、material remap epoch、layer、motion channel、および物性とDDAの設定一式へ紐づける。通常のWorld編集、速度channel変更、chunkの生成・退避・復帰、leaseによる活動集合変更では証明を失効させ、参照実装に戻る。sleep中でも空のWorld取引を一回実行してrevisionを進め、通常実行と保存データを同一にする。
+
+## 対象を限定する理由
+
+標準力学以外の作者Providerは、前tickの状態が変化しなくてもWorld内の保存済み作者状態やtickに応じて次tickへ速度を発行できる。そのため標準専用入口 World::step_standard_material_force_motion_sleeping は具体的なStandardMaterialForcesを使い、任意の作者Providerへ自動で適用しない。省略可能かの判断には直前のforceの待機数も必要である。重力が有効でも素材の加速係数が0で、隣接chunkが未読込のとき、参照forceはwaitingを記録する。この場合sleepしない。
+
+MaterialSleepTracker はCHSLEEP1で明示的に保存できるが、外部から復元した証明はそのWorldの正規cell/channelをまだ照合していない。decode後には必ず参照実装を一度通し、新しい証明を作成する。未検証のcodec値で正規simulationを省略しない。
+
+## 現段階の最適化範囲
+
+本実装は**全active chunk集合の標準force + 速度DDAに限った静止skip**である。最初の証明時には全非block候補の検査が必要だが、再利用できる間はactive chunkのrevision数だけを確認して全cell走査とcallbackを省略する。
+
+粉体・液体・気体の局所scalar、連結圧力Jacobi、正規粒子、作者のbehavior/timer/熱/進行中Jobには恒等証明なしにsleepを適用しない。chunk単位のdirtyと依存距離に応じたhalo wake、読み書きstencilや作者ruleの恒等宣言、scalar参照との網羅的差分比較は**E05全体の残課題**である。chunk.activeをsleep bitへ転用しない。
+
+## 検査と失敗時
+
+tests/material_forces.rsでは0重力での静止素材、静止固体への通常重力、World tickの偶奇を跨ぐ数tickの参照/最適化比較、外部速度編集と落下素材によるwake、未読込境界でwaitingを失わないこと、保存した証明の不信任、設定・候補上限変更の失敗維持を検証する。
+
+判定は各tickのMaterialForceMotionReportとWorld::checkpointの完全一致。skip対象外で例外が出た場合は参照World::editと同じrollbackとなり、失敗した計算をキャッシュ作成済みとして偽装しない。E05/Q04工程全体の合格を意味しない。
